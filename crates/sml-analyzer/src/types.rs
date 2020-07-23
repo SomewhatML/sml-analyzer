@@ -43,14 +43,11 @@ impl Alpha {
                     if args.is_empty() {
                         write!(f, "{}", interner.get(tc.name).unwrap_or_else(|| "?"))
                     } else {
-                        write!(f, "{} ", interner.get(tc.name).unwrap_or_else(|| "?"))?;
-                        for (idx, arg) in args.iter().enumerate() {
+                        for arg in args {
                             self.write_type(*arg, interner, f)?;
-                            if idx != args.len() - 1 {
-                                write!(f, " ")?;
-                            }
+                            write!(f, " ")?;
                         }
-                        write!(f, "")
+                        write!(f, "{} ", interner.get(tc.name).unwrap_or_else(|| "?"))
                     }
                 }
             },

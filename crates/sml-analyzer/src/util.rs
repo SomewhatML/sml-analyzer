@@ -10,10 +10,10 @@ impl<'s> LineIndex<'s> {
         let mut lines = vec![0];
         let mut abs = 0;
         for ch in source.chars() {
+            abs += 1;
             if ch == '\n' {
                 lines.push(abs);
             }
-            abs += 1;
         }
         LineIndex { source, lines }
     }

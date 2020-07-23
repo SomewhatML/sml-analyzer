@@ -76,7 +76,7 @@ impl<'a> GlobalState<'a> {
                     self.def_cache.walk_decl(decl);
                 }
 
-                info!("{:?}", &self.def_cache);
+                // info!("{:?}", &self.def_cache);
             }
             Err(e) => {
                 st_diag.push(diag_convert(e.to_diagnostic()));
@@ -292,17 +292,7 @@ fn main_loop<'arena>(
                     Ok(params) => {
                         state.data = params.text_document.text.clone();
                         state.uri = Some(params.text_document.uri.clone());
-
-                        let tks = state.lex();
-                        let s = tks
-                            .into_iter()
-                            .map(|t| format!("{:?}", t.data))
-                            .collect::<Vec<String>>()
-                            .join(" ");
-
-                        info!("lexed: {}", &s);
                         state.parse();
-
                         continue;
                     }
                     Err(not) => not,
@@ -310,18 +300,15 @@ fn main_loop<'arena>(
                 let not = match cast_not::<lsp_types::notification::DidChangeTextDocument>(not) {
                     Ok(params) => {
                         util::apply_changes(&mut state.data, params.content_changes);
-                        info!("update: {}", &state.data);
                         state.uri = Some(params.text_document.uri.clone());
-                        let tks = state.lex();
-                        let s = tks
-                            .into_iter()
-                            .map(|t| format!("{:?}", t.data))
-                            .collect::<Vec<String>>()
-                            .join(" ");
+                        continue;
+                    }
+                    Err(not) => not,
+                };
 
-                        info!("lexed: {}", &s);
+                let not = match cast_not::<notification::DidSaveTextDocument>(not) {
+                    Ok(params) => {
                         state.parse();
-
                         continue;
                     }
                     Err(not) => not,

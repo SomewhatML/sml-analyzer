@@ -19,6 +19,7 @@ impl<'s> LineIndex<'s> {
     }
 }
 
+// TODO: Absolutely broken
 pub fn apply_changes(prev: &mut String, changes: Vec<TextDocumentContentChangeEvent>) {
     for change in changes {
         let idx = LineIndex::new(prev);

@@ -7,11 +7,16 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tower-lsp = "0.11.0"
-tokio = { version = "0.2", features = ["rt-core", "macros", "io-std"] }
-tokio-util = { version = "0.3", features = ["codec"] }
+lsp-server = "0.3.3"
+log = "0.4.3"
+lsp-types = "0.63.0"
+flexi_logger = "0.14.0"
 
-sml-util = { path = "../../../SimpleML/crates/sml-util"}
-sml-frontend = { path = "../../../SimpleML/crates/sml-frontend"}
+sml-util = { git = "https://github.com/lazear/sml-compiler/" }
+sml-frontend = { git = "https://github.com/lazear/sml-compiler/" }
+sml-core = { git = "https://github.com/lazear/sml-compiler/" }
+
+
+serde_json = "1.0.34"
+serde = { version = "1.0.83", features = ["derive"] }
+crossbeam-channel = "0.4"

@@ -15,6 +15,7 @@ use sml_util::{
     span::{Span, Spanned},
 };
 
+mod cache;
 mod completions;
 mod util;
 
@@ -26,6 +27,7 @@ struct GlobalState<'arena> {
     sender: crossbeam_channel::Sender<lsp_server::Message>,
     uri: Option<lsp_types::Url>,
 
+    def_cache: cache::Definitions<'arena>,
     arena: &'arena sml_core::CoreArena<'arena>,
 }
 
@@ -67,7 +69,13 @@ impl<'a> GlobalState<'a> {
                     }
                 }
 
-                info!("decls! {:?}", &decls);
+                self.def_cache.clear();
+
+                for decl in &decls {
+                    self.def_cache.walk_decl(decl);
+                }
+
+                info!("{:?}", &self.def_cache);
             }
             Err(e) => {
                 st_diag.push(diag_convert(e.to_diagnostic()));
@@ -121,7 +129,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
             TextDocumentSyncKind::Incremental,
         )),
-        // hover_provider: Some(true),
+        hover_provider: Some(true),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
             trigger_characters: Some(vec![".".to_string(), ':'.to_string()]),
@@ -166,6 +174,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         sender: connection.sender.clone(),
         uri: None,
         arena: &owned_arena.borrow(),
+        def_cache: cache::Definitions::default(),
     };
 
     main_loop(&connection, initialization_params, &mut state)?;
@@ -195,6 +204,28 @@ fn main_loop<'arena>(
                     Ok((id, params)) => {
                         info!("got gotoDefinition request #{}: {:?}", id, params);
                         let result = Some(GotoDefinitionResponse::Array(Vec::new()));
+                        let result = serde_json::to_value(&result).unwrap();
+                        let resp = Response {
+                            id,
+                            result: Some(result),
+                            error: None,
+                        };
+                        connection.sender.send(Message::Response(resp))?;
+                        continue;
+                    }
+                    Err(req) => req,
+                };
+
+                let req = match cast::<request::HoverRequest>(req) {
+                    Ok((id, params)) => {
+                        let result = state.def_cache.position_to_type(params.position).map(|ty| {
+                            (Hover {
+                                contents: HoverContents::Scalar(MarkedString::from_markdown(
+                                    format!("type: {:?}", ty),
+                                )),
+                                range: None,
+                            })
+                        });
                         let result = serde_json::to_value(&result).unwrap();
                         let resp = Response {
                             id,

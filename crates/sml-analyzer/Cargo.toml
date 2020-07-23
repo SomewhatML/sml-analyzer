@@ -12,3 +12,6 @@ serde_json = "1.0"
 tower-lsp = "0.11.0"
 tokio = { version = "0.2", features = ["rt-core", "macros", "io-std"] }
 tokio-util = { version = "0.3", features = ["codec"] }
+
+sml-util = { path = "../../../SimpleML/crates/sml-util"}
+sml-frontend = { path = "../../../SimpleML/crates/sml-frontend"}

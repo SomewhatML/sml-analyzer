@@ -4,12 +4,17 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-mod completions;
+use sml_frontend::{lexer::Lexer, tokens::Token};
+use sml_util::{interner::*, span::Spanned};
 
-#[derive(Debug, Default)]
+mod completions;
+mod util;
+
 struct Backend {
     data: Arc<Mutex<String>>,
     kw_completions: Vec<CompletionItem>,
+    ty_completions: Vec<CompletionItem>,
+    interner: Arc<Mutex<Interner>>,
 }
 
 #[tower_lsp::async_trait]
@@ -95,17 +100,30 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, client: &Client, params: DidOpenTextDocumentParams) {
-        // params.text_document.text
-        let lock = self.data.lock();
-        let mut inner = lock.unwrap();
-        std::mem::replace(&mut *inner, params.text_document.text.clone());
+        self.with_source(|f| *f = params.text_document.text.clone());
 
         client.log_message(MessageType::Info, "file opened!");
-        client.log_message(MessageType::Info, &*inner);
+
+        let tks = self.lex();
+        let s = tks
+            .into_iter()
+            .map(|t| format!("{:?}", t.data))
+            .collect::<Vec<String>>()
+            .join(" ");
+        client.log_message(MessageType::Info, &s);
     }
 
     async fn did_change(&self, client: &Client, params: DidChangeTextDocumentParams) {
+        self.with_source(|f| util::apply_changes(f, params.content_changes));
         client.log_message(MessageType::Info, "file changed!");
+
+        let tks = self.lex();
+        let s = tks
+            .into_iter()
+            .map(|t| format!("{:?}", t.data))
+            .collect::<Vec<String>>()
+            .join(" ");
+        client.log_message(MessageType::Info, &s);
     }
 
     async fn did_save(&self, client: &Client, _: DidSaveTextDocumentParams) {
@@ -120,16 +138,10 @@ impl LanguageServer for Backend {
         match c.context {
             Some(ctx) => match ctx.trigger_character.map(|s| s.chars().next()).flatten() {
                 Some('.') => Ok(Some(CompletionResponse::Array(vec![
-                    CompletionItem::new_simple("Hello".to_string(), "Some detail".to_string()),
-                    CompletionItem::new_simple("Bye".to_string(), "More detail".to_string()),
+                    CompletionItem::new_simple("length".to_string(), "List.length".to_string()),
+                    CompletionItem::new_simple("map".to_string(), "List.map".to_string()),
                 ]))),
-                Some(':') => Ok(Some(CompletionResponse::Array(vec![
-                    CompletionItem::new_simple("int".to_string(), "Integer type".to_string()),
-                    CompletionItem::new_simple("bool".to_string(), "Boolean type".to_string()),
-                    CompletionItem::new_simple("char".to_string(), "Character type".to_string()),
-                    CompletionItem::new_simple("string".to_string(), "String type".to_string()),
-                    CompletionItem::new_simple("list".to_string(), "List type".to_string()),
-                ]))),
+                Some(':') => Ok(Some(CompletionResponse::Array(self.ty_completions.clone()))),
                 _ => Ok(Some(CompletionResponse::Array(self.kw_completions.clone()))),
             },
             _ => Ok(None),
@@ -169,6 +181,25 @@ impl LanguageServer for Backend {
     }
 }
 
+impl Backend {
+    fn lex(&self) -> Vec<Spanned<Token>> {
+        let lock = self.data.lock();
+        let mut inner = lock.unwrap();
+
+        let int_lock = self.interner.lock();
+        let mut int_inner = int_lock.unwrap();
+
+        let mut lexer = Lexer::new(inner.chars(), &mut *int_inner);
+        lexer.collect()
+    }
+
+    fn with_source<F: FnOnce(&mut String)>(&self, f: F) {
+        let lock = self.data.lock();
+        let mut inner = lock.unwrap();
+        f(&mut *inner)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let stdin = tokio::io::stdin();
@@ -177,6 +208,8 @@ async fn main() {
     let backend = Backend {
         data: Arc::new(Mutex::new(String::default())),
         kw_completions: completions::keyword_completions(),
+        ty_completions: completions::builtin_ty_completions(),
+        interner: Arc::new(Mutex::new(Interner::with_capacity(4096))),
     };
 
     let (service, messages) = LspService::new(backend);

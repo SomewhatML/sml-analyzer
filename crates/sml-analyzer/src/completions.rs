@@ -1,5 +1,11 @@
 use super::*;
 
+fn ty(s: &str) -> CompletionItem {
+    let mut c = CompletionItem::new_simple(s.into(), "SML type".into());
+    c.kind = Some(CompletionItemKind::TypeParameter);
+    c
+}
+
 fn keyword(s: &str) -> CompletionItem {
     let mut c = CompletionItem::new_simple(s.into(), "SML keyword".into());
     c.kind = Some(CompletionItemKind::Keyword);
@@ -45,5 +51,17 @@ pub fn keyword_completions() -> Vec<CompletionItem> {
         keyword("signature"),
         keyword("struct"),
         keyword("structure"),
+    ]
+}
+
+pub fn builtin_ty_completions() -> Vec<CompletionItem> {
+    vec![
+        ty("unit"),
+        ty("int"),
+        ty("bool"),
+        ty("char"),
+        ty("string"),
+        ty("list"),
+        ty("ref"),
     ]
 }

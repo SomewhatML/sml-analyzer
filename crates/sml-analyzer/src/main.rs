@@ -17,6 +17,7 @@ use sml_util::{
 
 mod cache;
 mod completions;
+mod types;
 mod util;
 
 struct GlobalState<'arena> {
@@ -219,12 +220,17 @@ fn main_loop<'arena>(
                 let req = match cast::<request::HoverRequest>(req) {
                     Ok((id, params)) => {
                         let result = state.def_cache.position_to_type(params.position).map(|ty| {
-                            (Hover {
+                            let mut alpha = types::Alpha::default();
+                            let mut out = String::with_capacity(64);
+
+                            alpha.write_type(ty, &state.interner, &mut out).unwrap();
+
+                            Hover {
                                 contents: HoverContents::Scalar(MarkedString::from_markdown(
-                                    format!("type: {:?}", ty),
+                                    format!("type: {}", out),
                                 )),
                                 range: None,
-                            })
+                            }
                         });
                         let result = serde_json::to_value(&result).unwrap();
                         let resp = Response {

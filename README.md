@@ -1,5 +1,9 @@
 # sml-analyzer
 
+An experimental language-server for Standard ML
+
+![Demo](demo.png)
+
 ```
 cargo build
 ```

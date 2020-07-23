@@ -35,7 +35,7 @@ impl<'a> Definitions<'a> {
         self.types
             .iter()
             .filter(|(sp, _)| in_span(&pos, sp))
-            .next()
+            .last()
             .map(|(_, ty)| *ty)
 
         // self.types.get(0).map(|(a, b)| *b)
@@ -56,6 +56,7 @@ impl<'a> Definitions<'a> {
                 for (name, lam) in lambdas {
                     self.funs.push((lam.body.span, lam.clone()));
                     self.types.push((lam.body.span, lam.ty));
+                    self.walk_expr(&lam.body);
                 }
             }
             Decl::Val(rule) => {
@@ -78,6 +79,33 @@ impl<'a> Definitions<'a> {
                 for rule in rules {
                     self.walk_pat(&rule.pat);
                     self.walk_expr(&rule.expr);
+                }
+            }
+            ExprKind::Lambda(Lambda { body, ty, .. }) => {
+                self.walk_expr(body);
+            }
+            ExprKind::Let(decls, expr) => {
+                for decl in decls {
+                    self.walk_decl(decl);
+                }
+                self.walk_expr(expr);
+            }
+            ExprKind::Handle(expr, rules) => {
+                self.walk_expr(expr);
+                for rule in rules {
+                    self.walk_pat(&rule.pat);
+                    self.walk_expr(&rule.expr);
+                }
+            }
+            ExprKind::Raise(expr) => self.walk_expr(expr),
+            ExprKind::Record(fields) => {
+                for field in fields.iter() {
+                    self.walk_expr(&field.data);
+                }
+            }
+            ExprKind::List(exprs) | ExprKind::Seq(exprs) => {
+                for expr in exprs {
+                    self.walk_expr(expr);
                 }
             }
             _ => {}

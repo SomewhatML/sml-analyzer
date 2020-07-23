@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 
 use log::info;
@@ -21,13 +22,11 @@ mod types;
 mod util;
 
 struct GlobalState<'arena> {
-    data: String,
+    text_cache: HashMap<lsp_types::Url, String>,
     kw_completions: Vec<CompletionItem>,
     ty_completions: Vec<CompletionItem>,
     interner: Interner,
     sender: crossbeam_channel::Sender<lsp_server::Message>,
-    uri: Option<lsp_types::Url>,
-
     def_cache: cache::Definitions<'arena>,
     arena: &'arena sml_core::CoreArena<'arena>,
 }
@@ -43,13 +42,13 @@ pub fn diag_convert(mut diag: sml_util::diagnostics::Diagnostic) -> Diagnostic {
 }
 
 impl<'a> GlobalState<'a> {
-    fn lex(&mut self) -> Vec<Spanned<Token>> {
-        let lexer = Lexer::new(self.data.chars(), &mut self.interner);
-        lexer.collect()
-    }
+    fn parse(&mut self, url: &Url) {
+        let data = match self.text_cache.get(url) {
+            Some(data) => data,
+            None => return,
+        };
 
-    fn parse(&mut self) {
-        let mut parser = sml_frontend::parser::Parser::new(&self.data, &mut self.interner);
+        let mut parser = sml_frontend::parser::Parser::new(data, &mut self.interner);
 
         let (res, diags) = (parser.parse_decl(), parser.diags);
         // let mut ctx = sml_core::elaborate::Context::new(&borrow);
@@ -88,11 +87,11 @@ impl<'a> GlobalState<'a> {
             }
         };
 
-        info!("reporting {} errors for {:?}", st_diag.len(), self.uri);
+        info!("reporting {} errors for {:?}", st_diag.len(), url);
 
         self.send_notification::<lsp_types::notification::PublishDiagnostics>(
             lsp_types::PublishDiagnosticsParams {
-                uri: self.uri.clone().unwrap(),
+                uri: url.clone(),
                 diagnostics: st_diag,
                 version: None,
             },
@@ -168,12 +167,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let owned_arena = sml_core::arenas::OwnedCoreArena::new();
 
     let mut state = GlobalState {
-        data: String::default(),
+        text_cache: HashMap::default(),
         kw_completions: completions::keyword_completions(),
         ty_completions: completions::builtin_ty_completions(),
         interner: Interner::with_capacity(4096),
         sender: connection.sender.clone(),
-        uri: None,
         arena: &owned_arena.borrow(),
         def_cache: cache::Definitions::default(),
     };
@@ -290,17 +288,21 @@ fn main_loop<'arena>(
                 // info!("got notification: {:?}", not);
                 let not = match cast_not::<lsp_types::notification::DidOpenTextDocument>(not) {
                     Ok(params) => {
-                        state.data = params.text_document.text.clone();
-                        state.uri = Some(params.text_document.uri.clone());
-                        state.parse();
+                        *state
+                            .text_cache
+                            .entry(params.text_document.uri.clone())
+                            .or_default() = params.text_document.text.clone();
+                        state.parse(&params.text_document.uri);
                         continue;
                     }
                     Err(not) => not,
                 };
                 let not = match cast_not::<lsp_types::notification::DidChangeTextDocument>(not) {
                     Ok(params) => {
-                        util::apply_changes(&mut state.data, params.content_changes);
-                        state.uri = Some(params.text_document.uri.clone());
+                        match state.text_cache.get_mut(&params.text_document.uri) {
+                            Some(data) => util::apply_changes(data, params.content_changes),
+                            None => {}
+                        }
                         continue;
                     }
                     Err(not) => not,
@@ -308,7 +310,7 @@ fn main_loop<'arena>(
 
                 let not = match cast_not::<notification::DidSaveTextDocument>(not) {
                     Ok(params) => {
-                        state.parse();
+                        state.parse(&params.text_document.uri);
                         continue;
                     }
                     Err(not) => not,

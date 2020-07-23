@@ -10,10 +10,19 @@ datatype 'a option = None | Some of 'a
 fun >>= ((Some x), f) = f x 
   | >>= (None  , f) = None
 
-val x = >>= :: nil;
+infixr 3 >>=
 
-val y = true;
-val x = let val _ = 1::y::nil in 10 end;
+val x = (Some 10) >>= (fn x => Some x);
 
-val y = 10;
-val _ = append 1 y;
+val rand = primitive "Int.random" : unit -> int
+
+val u = case x of 
+  | Some x => x
+  | None => rand ()
+  end
+
+fun main x y z = {x = x, y = y::z}
+
+val q = fn x => Some x;
+
+val _ = main true 1 nil;

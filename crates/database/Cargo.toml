@@ -1,5 +1,5 @@
 [package]
-name = "sml-analyzer"
+name = "database"
 version = "0.1.0"
 authors = ["Michael Lazear <lazear@scripps.edu>"]
 edition = "2018"
@@ -7,17 +7,8 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-lsp-server = "0.3.3"
-log = "0.4.3"
-lsp-types = "0.63.0"
-flexi_logger = "0.14.0"
-
 sml-util = { git = "https://github.com/SomewhatML/sml-compiler/" }
 sml-frontend = { git = "https://github.com/SomewhatML/sml-compiler/" }
 sml-core = { git = "https://github.com/SomewhatML/sml-compiler/" }
-
-database = { path = "../database" }
-
-serde_json = "1.0.34"
-serde = { version = "1.0.83", features = ["derive"] }
-crossbeam-channel = "0.4"
+typed-arena = "2.0"
+log = "0.4.3"

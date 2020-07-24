@@ -16,6 +16,8 @@ use sml_util::{
     span::{Span, Spanned},
 };
 
+use database::Database;
+
 mod cache;
 mod completions;
 mod types;
@@ -29,6 +31,8 @@ struct GlobalState<'arena> {
     sender: crossbeam_channel::Sender<lsp_server::Message>,
     def_cache: cache::Definitions<'arena>,
     arena: &'arena sml_core::CoreArena<'arena>,
+
+    db: Database<'arena>,
 }
 
 pub fn diag_convert(mut diag: sml_util::diagnostics::Diagnostic) -> Diagnostic {
@@ -60,6 +64,11 @@ impl<'a> GlobalState<'a> {
                         st_diag.push(diag_convert(diag));
                     }
                 }
+
+                self.db.elaborate_decl(&d);
+
+                info!("db types: {}", self.db.types.len());
+                self.db.dump();
 
                 let (decls, diags) = sml_core::elaborate::check_and_elaborate(&self.arena, &d);
 
@@ -117,7 +126,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     // Set up logging. Because `stdio_transport` gets a lock on stdout and stdin, we must have
     // our logging only write out to stderr.
     flexi_logger::Logger::with_str("info").start().unwrap();
-    info!("starting generic LSP server");
+    info!("starting sml-analyzer");
 
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could
     // also be implemented to use sockets or HTTP.
@@ -166,6 +175,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let owned_arena = sml_core::arenas::OwnedCoreArena::new();
 
+    let oa2 = database::arena::OwnedArena::new();
+    let a2 = oa2.borrow();
+
     let mut state = GlobalState {
         text_cache: HashMap::default(),
         kw_completions: completions::keyword_completions(),
@@ -174,6 +186,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         sender: connection.sender.clone(),
         arena: &owned_arena.borrow(),
         def_cache: cache::Definitions::default(),
+        db: Database::new(&a2),
     };
 
     main_loop(&connection, initialization_params, &mut state)?;

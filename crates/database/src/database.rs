@@ -188,7 +188,7 @@ impl<'ar> Database<'ar> {
         self.namespaces
             .iter()
             .enumerate()
-            .filter(|(_, ns)| in_span(&loc, &ns.span))
+            .filter(|(_, ns)| loc.line >= ns.span.start.line && loc.line < ns.span.end.line)
             .last()
             .map(|(idx, _)| idx)
             .unwrap_or_default()
@@ -602,14 +602,16 @@ impl<'ar> Database<'ar> {
         }
     }
 
-    pub fn dump(&self) {
-        for Spanned { span, data } in &self.types {
-            info!("type defined @ {:?}", span)
-        }
+    // TODO: Properly handle scoping
+    fn elab_decl_local(&mut self, decls: &ast::Decl, body: &ast::Decl, span: Span) {
+        self.with_scope(|ctx| {
+            ctx.elaborate_decl(decls);
+            ctx.elaborate_decl(body);
+            ctx.set_ns_span(span);
+        })
     }
 
     pub fn elaborate_decl(&mut self, decl: &ast::Decl) {
-        // info!("elab {:?}")
         match &decl.data {
             ast::DeclKind::Datatype(dbs) => self.elab_decl_datatype(dbs),
             ast::DeclKind::Type(tbs) => self.elab_decl_type(tbs),
@@ -617,7 +619,7 @@ impl<'ar> Database<'ar> {
             // ast::DeclKind::Value(tyvars, pat, expr) => self.elab_decl_val(tyvars, pat, expr),
             ast::DeclKind::Exception(exns) => self.elab_decl_exception(exns),
             // ast::DeclKind::Fixity(fixity, bp, sym) => self.elab_decl_fixity(fixity, *bp, *sym),
-            // ast::DeclKind::Local(decls, body) => self.elab_decl_local(decls, body),
+            ast::DeclKind::Local(decls, body) => self.elab_decl_local(decls, body, decl.span),
             ast::DeclKind::Seq(decls) => {
                 for d in decls {
                     self.elaborate_decl(d);

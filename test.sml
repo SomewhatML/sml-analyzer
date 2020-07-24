@@ -1,8 +1,9 @@
-fun append x xs = x::xs
-  | append x []   = x::[]
 
-val x = 10;
+local 
+  datatype qux = Q of int | T of u
+ in    
+  datatype v = V of int
+end;
 
-datatype u = U of int;
+datatype t = T of int
 
-type t = {x:int, y:int}

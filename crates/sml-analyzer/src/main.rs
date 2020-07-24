@@ -27,8 +27,8 @@ struct GlobalState<'arena> {
     kw_completions: Vec<CompletionItem>,
     interner: Interner,
     sender: crossbeam_channel::Sender<lsp_server::Message>,
-    def_cache: cache::Definitions<'arena>,
-    arena: &'arena sml_core::CoreArena<'arena>,
+    // def_cache: cache::Definitions<'arena>,
+    arena: &'arena database::arena::Arena<'arena>,
 
     db: Database<'arena>,
 }
@@ -70,25 +70,26 @@ impl<'a> GlobalState<'a> {
                         st_diag.push(diag_convert(diag));
                     }
                 }
+                self.db = Database::new(self.arena);
                 let (_, dur) = measure(|| self.db.elaborate_decl(&d));
 
                 info!("new elab took {} us", dur);
-                self.db.dump();
+                // self.db.dump();
 
-                let ((decls, diags), dur) =
-                    measure(|| sml_core::elaborate::check_and_elaborate(&self.arena, &d));
-                info!("old elab took {} us", dur);
-                if !diags.is_empty() {
-                    for diag in diags {
-                        st_diag.push(diag_convert(diag));
-                    }
-                }
+                // let ((decls, diags), dur) =
+                //     measure(|| sml_core::elaborate::check_and_elaborate(&self.arena, &d));
+                // info!("old elab took {} us", dur);
+                // if !diags.is_empty() {
+                //     for diag in diags {
+                //         st_diag.push(diag_convert(diag));
+                //     }
+                // }
 
-                self.def_cache = cache::Definitions::default();
+                // self.def_cache = cache::Definitions::default();
 
-                for decl in &decls {
-                    self.def_cache.walk_decl(decl);
-                }
+                // for decl in &decls {
+                //     self.def_cache.walk_decl(decl);
+                // }
 
                 // info!("{:?}", &self.def_cache);
             }
@@ -144,10 +145,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
             TextDocumentSyncKind::Incremental,
         )),
-        hover_provider: Some(true),
+        // hover_provider: Some(true),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
-            trigger_characters: Some(vec![".".to_string(), ':'.to_string()]),
+            trigger_characters: Some(vec![':'.to_string()]),
             work_done_progress_options: Default::default(),
         }),
         ..ServerCapabilities::default()
@@ -156,19 +157,16 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let server_capabilities = serde_json::to_value(&caps).unwrap();
     let initialization_params = connection.initialize(server_capabilities)?;
 
-    let owned_arena = sml_core::arenas::OwnedCoreArena::new();
-
-    let oa2 = database::arena::OwnedArena::new();
-    let a2 = oa2.borrow();
-
+    let owned_arena = database::arena::OwnedArena::new();
+    let borrow = owned_arena.borrow();
     let mut state = GlobalState {
         text_cache: HashMap::default(),
         kw_completions: completions::keyword_completions(),
         interner: Interner::with_capacity(4096),
         sender: connection.sender.clone(),
-        arena: &owned_arena.borrow(),
-        def_cache: cache::Definitions::default(),
-        db: Database::new(&a2),
+        arena: &borrow,
+        // def_cache: cache::Definitions::default(),
+        db: Database::new(&borrow),
     };
 
     main_loop(&connection, initialization_params, &mut state)?;
@@ -180,17 +178,18 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 }
 
 fn hover_request(state: &mut GlobalState, params: TextDocumentPositionParams) -> Option<Hover> {
-    state.def_cache.position_to_type(params.position).map(|ty| {
-        let mut alpha = types::Alpha::default();
-        let mut out = String::with_capacity(64);
+    // state.def_cache.position_to_type(params.position).map(|ty| {
+    //     let mut alpha = types::Alpha::default();
+    //     let mut out = String::with_capacity(64);
 
-        alpha.write_type(ty, &state.interner, &mut out).unwrap();
+    //     alpha.write_type(ty, &state.interner, &mut out).unwrap();
 
-        Hover {
-            contents: HoverContents::Scalar(MarkedString::from_markdown(format!("type: {}", out))),
-            range: None,
-        }
-    })
+    //     Hover {
+    //         contents: HoverContents::Scalar(MarkedString::from_markdown(format!("type: {}", out))),
+    //         range: None,
+    //     }
+    // })
+    None
 }
 
 fn map_ve(inter: &Interner, sym: Symbol, ty: &database::Type<'_>) -> Option<CompletionItem> {
@@ -227,7 +226,7 @@ fn completion_req(state: &mut GlobalState, params: CompletionParams) -> Option<C
     let loc = sml_util::span::Location::new(pos.line as u16, pos.character as u16, 0);
     params.context.map(
         |ctx| match ctx.trigger_character.map(|s| s.chars().next()).flatten() {
-            Some('.') => CompletionResponse::Array(state.def_cache.completions(&state.interner)),
+            // Some('.') => CompletionResponse::Array(state.def_cache.completions(&state.interner)),
             Some(':') => {
                 let tycons = state
                     .db

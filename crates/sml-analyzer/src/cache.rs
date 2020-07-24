@@ -3,11 +3,12 @@ use super::*;
 use sml_core::types::Type;
 use sml_core::{Datatype, Decl, Expr, ExprKind, Lambda, Pat, PatKind};
 use std::collections::HashMap;
+use std::fmt::Write;
 
 #[derive(Default, Debug)]
 pub struct Definitions<'a> {
     types: Vec<(Span, &'a Type<'a>)>,
-    funs: Vec<(Span, Lambda<'a>)>,
+    funs: Vec<(Symbol, Lambda<'a>)>,
 
     name_to_type: HashMap<Symbol, &'a Type<'a>>,
     datatypes: HashMap<Symbol, Datatype<'a>>,
@@ -22,6 +23,44 @@ fn in_span(pos: &Position, span: &Span) -> bool {
     }
 }
 
+struct TyArrowIter<'a, 'b> {
+    ty: &'b Type<'a>,
+    done: bool,
+}
+
+impl<'a, 'b> Iterator for TyArrowIter<'a, 'b> {
+    type Item = &'b Type<'a>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            None
+        } else {
+            self.done = true;
+            match self.ty {
+                Type::Con(sml_core::builtin::tycons::T_ARROW, args) => {
+                    let ty = &args[0];
+                    self.ty = &args[1];
+                    if let Type::Con(sml_core::builtin::tycons::T_ARROW, _) = ty {
+                        self.done = false;
+                    }
+                    Some(ty)
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
+fn make_ty_fmt_str(ty: &Type<'_>, interner: &Interner) -> String {
+    let mut alpha = crate::types::Alpha::default();
+    let iter = TyArrowIter { ty, done: false };
+    iter.enumerate().fold(String::new(), |mut acc, (idx, ty)| {
+        let _ = write!(&mut acc, " ${{{}:(", idx + 2);
+        let _ = alpha.write_type(ty, interner, &mut acc);
+        let _ = write!(&mut acc, ")}}");
+        acc
+    })
+}
+
 impl<'a> Definitions<'a> {
     fn name_to_type(&self, name: Symbol) -> Option<&'a Type> {
         self.name_to_type.get(&name).copied()
@@ -31,15 +70,39 @@ impl<'a> Definitions<'a> {
         self.types.clear();
     }
 
+    pub fn completions(&self, interner: &Interner) -> Vec<CompletionItem> {
+        self.funs
+            .iter()
+            .map(|(name, lam)| {
+                let mut alpha = crate::types::Alpha::default();
+                let mut out = String::new();
+                let _ = alpha.write_type(lam.ty, interner, &mut out);
+                let fst = out.clone();
+                let _ = write!(&mut out, " -> ");
+                let _ = alpha.write_type(lam.body.ty, interner, &mut out);
+
+                let name = interner.get(*name).unwrap_or_else(|| "?");
+                let mut c = CompletionItem::new_simple(name.into(), out);
+                c.kind = Some(CompletionItemKind::Function);
+                c.insert_text_format = Some(InsertTextFormat::Snippet);
+                c.insert_text = Some(format!(
+                    "{} ${{1:({})}}{}",
+                    name,
+                    fst,
+                    make_ty_fmt_str(lam.body.ty, interner)
+                ));
+
+                c
+            })
+            .collect()
+    }
+
     pub fn position_to_type(&self, pos: Position) -> Option<&Type<'a>> {
         self.types
             .iter()
             .filter(|(sp, _)| in_span(&pos, sp))
             .last()
             .map(|(_, ty)| *ty)
-
-        // self.types.get(0).map(|(a, b)| *b)
-        // None
     }
 
     pub fn walk_decl(&mut self, decl: &Decl<'a>) {
@@ -54,7 +117,7 @@ impl<'a> Definitions<'a> {
             }
             Decl::Fun(_, lambdas) => {
                 for (name, lam) in lambdas {
-                    self.funs.push((lam.body.span, lam.clone()));
+                    self.funs.push((*name, lam.clone()));
                     self.types.push((lam.body.span, lam.ty));
                     self.walk_expr(&lam.body);
                 }

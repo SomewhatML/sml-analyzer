@@ -69,7 +69,7 @@ impl<'a> GlobalState<'a> {
                     }
                 }
 
-                self.def_cache.clear();
+                self.def_cache = cache::Definitions::default();
 
                 for decl in &decls {
                     self.def_cache.walk_decl(decl);
@@ -247,22 +247,32 @@ fn main_loop<'arena>(
                         let result = match params.context {
                             Some(ctx) => {
                                 match ctx.trigger_character.map(|s| s.chars().next()).flatten() {
-                                    Some('.') => Some(CompletionResponse::Array(vec![
-                                        CompletionItem::new_simple(
-                                            "length".to_string(),
-                                            "List.length".to_string(),
-                                        ),
-                                        CompletionItem::new_simple(
-                                            "map".to_string(),
-                                            "List.map".to_string(),
-                                        ),
-                                    ])),
+                                    Some('.') => Some(CompletionResponse::Array(
+                                        state.def_cache.completions(&state.interner),
+                                    )),
                                     Some(':') => Some(CompletionResponse::Array(
                                         state.ty_completions.clone(),
                                     )),
-                                    _ => Some(CompletionResponse::Array(
-                                        state.kw_completions.clone(),
-                                    )),
+                                    _ => {
+                                        let mut kw = state.def_cache.completions(&state.interner);
+                                        kw.extend(state.kw_completions.iter().cloned());
+
+                                        let mut it = CompletionItem::new_simple(
+                                            "Test".into(),
+                                            "test".into(),
+                                        );
+                                        it.documentation =
+                                            Some(Documentation::MarkupContent(MarkupContent {
+                                                kind: MarkupKind::Markdown,
+                                                value: String::from(
+                                                    "# Document\nParams:\n* Hello\n*Goodbye",
+                                                ),
+                                            }));
+                                        it.insert_text_format = Some(InsertTextFormat::Snippet);
+                                        it.insert_text = Some(String::from("test $1 ${2:foo}"));
+                                        kw.insert(0, it);
+                                        Some(CompletionResponse::Array(kw))
+                                    }
                                 }
                             }
                             _ => None,

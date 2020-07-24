@@ -33,6 +33,13 @@
 					"sml"
 				]
 			}
+		],
+		"grammars": [
+			{
+				"language": "sml",
+				"scopeName": "source.sml",
+				"path": "./syntaxes/sml.tmLanguage.json"
+			}
 		]
 	},
 	"devDependencies": {

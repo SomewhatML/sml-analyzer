@@ -12,6 +12,13 @@ fn keyword(s: &str) -> CompletionItem {
     c
 }
 
+pub fn fun(s: &str, ty_str: &str) -> CompletionItem {
+    let mut c = CompletionItem::new_simple(s.into(), ty_str.into());
+    c.kind = Some(CompletionItemKind::Function);
+    // c.documentation = Some(Documentation::MarkupContent(MarkupContent ))
+    c
+}
+
 pub fn keyword_completions() -> Vec<CompletionItem> {
     vec![
         keyword("and"),

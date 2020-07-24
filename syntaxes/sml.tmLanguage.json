@@ -1,0 +1,180 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Standard ML",
+	"patterns": [
+		{ "include": "#decDec" },
+		{ "include": "#exp "},
+		{ "include": "#number" },
+		{ "include": "#strings" },
+		{ "include": "#comment" },
+		{ "include": "#const" },
+		{ "include": "#keywords" },
+		{ "include": "#typeVar" }
+	],
+	"repository": {
+		"decDec": {
+			"patterns": [
+				{
+					"match": "\\s*(structure)\\s+(.*?)(?:[^a-zA-Z0-9_!%&$#+/:<=>?@\\~`^|*-])\\s*:>?\\s*(.*?)(?:[^a-zA-Z0-9_!%&$#+/:<=>?@\\~`^|*-]|$)",
+					"captures": {
+						"1": { "name": "keyword.other.sml" },
+						"2": { "name": "support.variable.sml" },
+						"3": { "name": "entity.name.type.sml" }
+					}
+				},
+				{
+					"match": "\\s*(structure)\\s+(.*?)(?:[^a-zA-Z0-9_!%&$#+/:<=>?@\\~`^|*-]|$)",
+					"captures": {
+						"1": { "name": "keyword.other.sml" },
+						"2": { "name": "support.variable.sml" }
+					}
+				},
+				{
+					"match": "\\s*(signature)\\s+(.*?)(?:[^a-zA-Z0-9_!%&$#+/:<=>?@\\~`^|*-]|$)",
+					"captures": {
+						"1": { "name": "keyword.other.sml" },
+						"2": { "name": "entity.name.type.sml" }
+					}
+				},
+				{
+					"match": "\\s*(exception)\\s+(op)?(.*?)(?:\\s|$)",
+					"captures": {
+						"1": { "name": "keyword.other.sml" },
+						"2": { "name": "keyword.other.sml" },
+						"3": { "name": "entity.name.type.sml" }
+					}
+				},
+				{
+					"match": "\\s*(datatype)\\s+(.*?)(?:[^a-zA-Z0-9_!%&$#+/:<=>?@\\~`^|*-]|$)",
+					"captures": {
+						"1": { "name": "keyword.other.sml" },
+						"2": { "name": "entity.name.type.sml" }
+					}
+				},
+				{
+					"match": "(fun)\\s+(op)?([a-zA-Z_][a-zA-Z0-9'_!%&$#+/:<=>?@\\~`^|*-]*)",
+					"captures": {
+						"1": { "name": "keyword.other.sml" },
+						"2": { "name": "keyword.other.sml" },
+						"3": { "name": "entity.name.function.sml" }
+					}
+				},
+				{
+					"match": "\\|\\s+(op)?([a-zA-Z_][a-zA-Z0-9'_!%&$#+/:<=>?@\\~`^|*-]*)",
+					"captures": {
+						"1": { "name": "keyword.other.sml" },
+						"2": { "name": "entity.name.function.sml" }
+					}
+				},
+				{
+					"match": "\\b(val)\\s+(.*?)(?:[^a-zA-Z0-9_!%&$#+/:<=>?@\\~`^|*-]|$)",
+					"captures": {
+						"1": { "name": "keyword.other.sml" },
+						"2": {
+							"patterns": [
+								{
+									"match": "(op)([!%&$#+/:<=>?@\\~`^|*-]+)",
+									"captures": {
+										"1": { "name": "keyword.other.sml" },
+										"2": { "name": "keyword.operator.sml" }
+									}
+								},
+								{
+									"name": "variable.other.sml",
+									"match": ".*"
+								}
+							]
+						}
+					}
+				}
+			]
+		},
+		"exp": {
+			"patterns": [
+				{
+					"match": "(raise)\\s+([a-zA-Z_][a-zA-Z0-9_!%&$#+/:<=>?@\\~`^|*-]*)",
+					"captures": {
+						"1": { "name": "keyword.control.sml" },
+						"2": { "name": "entity.name.type.sml" }
+					}
+				}
+			]
+		},
+		"number": {
+			"patterns": [
+				{
+					"name": "constant.numeric.sml",
+					"match": "(?:0w(?:\\d+|x[0-9a-fA-F]+)|~?0x[0-9a-fA-F]+|~?\\d+(?:\\.\\d+)?(?:[eE]~?\\d+)?)"
+				}
+			]
+		},
+		"keywords": {
+			"patterns": [
+				{
+					"name": "keyword.control.sml",
+					"match": "\\b(if|then|else|case|of|raise|while|do|use)\\b"
+				},
+				{
+					"name": "keyword.other.sml",
+					"match": "\\b(abstype|and|datatype|exception|op|fn|fun(?:ctor)?|handle|in|infixr?|let|local|nonfix|open|rec|type|val|with|withtype|end|sharing|where|include|sig(?:nature)?|eqtype|struct(?:ure)?)\\b"
+				}
+			]
+		},
+		"strings": {
+			"name": "string.quoted.double.sml",
+			"begin": "#?\"",
+			"end": "\"",
+			"patterns": [
+				{
+					"name": "constant.character.escape.sml",
+					"begin": "\\\\(?:\\s+|$)",
+					"end": "(?:^|\\s+)\\\\",
+					"patterns": [{
+						"match": "^\\s*$"
+					}]
+				},
+				{
+					"name": "constant.character.escape.sml",
+					"match": "\\\\(?:[abtnvfr]|\\d{3}|\"|\\s*\\\\)"
+				}
+			]
+		},
+		"comment": {
+			"patterns": [{
+				"name": "comment.block.sml",
+				"begin": "\\(\\*",
+				"end": "\\*\\)",
+				"patterns": [{"include": "#comment"}]
+			}]
+		},
+		"const": {
+			"patterns": [
+				{
+					"name": "constant.language.boolean.sml",
+					"match": "\\b(true|false|nil|ref)\\b"
+				},
+				{
+					"name": "constant.language.exception.sml",
+					"match": "\\b(Bind|Chr|Div|Domain|Empty|Fail|Match|Option|Overflow|Size|Span|Subscript)\\b"
+				},
+				{
+					"name": "entity.name.type.sml",
+					"match": "\\b(unit|bool|int|word|real|string|char|list|ref|exn)\\b"
+				},
+				{
+					"name": "keyword.operator.sml",
+					"match": "\\b(orelse|andalso|div|mod|\\+|-|\\*|\\\\|\\^|::|\\!|:=|@|~|abs|<|>|<=|>=|#|before|ignore|o)\\b"
+				}
+			]
+		},
+		"typeVar": {
+			"patterns": [
+				{
+					"name": "variable.parameter.type.sml",
+					"match": "''?[a-fA-F]+"
+				}
+			]
+		}
+	},
+	"scopeName": "source.sml"
+}

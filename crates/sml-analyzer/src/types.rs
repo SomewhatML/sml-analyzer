@@ -47,7 +47,7 @@ impl Alpha {
                             self.write_type(*arg, interner, f)?;
                             write!(f, " ")?;
                         }
-                        write!(f, "{} ", interner.get(tc.name).unwrap_or_else(|| "?"))
+                        write!(f, "{}", interner.get(tc.name).unwrap_or_else(|| "?"))
                     }
                 }
             },

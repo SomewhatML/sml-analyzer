@@ -33,6 +33,8 @@ pub struct Database<'ar> {
     // Generate dummy variable names, mostly for error handling
     gensym: Cell<usize>,
 
+    local: bool,
+
     // Arena for type allocation
     pub arena: &'ar Arena<'ar>,
 
@@ -145,6 +147,7 @@ impl<'ar> Database<'ar> {
             types: Vec::default(),
             values: Vec::default(),
             diags: Vec::default(),
+            local: false,
             arena,
         };
         ctx.namespaces.push(Namespace::default());
@@ -257,7 +260,12 @@ impl<'ar> Database<'ar> {
     ) -> TypeId {
         let id = TypeId(self.types.len() as u32);
         self.types.push(Spanned::new(tystr, span));
-        self.namespaces[self.current].types.insert(sym, id);
+        let ns = if self.local {
+            self.namespaces[self.current].parent.unwrap_or(self.current)
+        } else {
+            self.current
+        };
+        self.namespaces[ns].types.insert(sym, id);
         id
     }
 
@@ -270,9 +278,14 @@ impl<'ar> Database<'ar> {
         span: Span,
     ) -> ExprId {
         let id = ExprId(self.values.len() as u32);
+        let ns = if self.local {
+            self.namespaces[self.current].parent.unwrap_or(self.current)
+        } else {
+            self.current
+        };
         self.values
             .push(Spanned::new(ValueStructure { scheme, status }, span));
-        self.namespaces[self.current].values.insert(sym, id);
+        self.namespaces[ns].values.insert(sym, id);
         id
     }
 
@@ -606,8 +619,10 @@ impl<'ar> Database<'ar> {
     fn elab_decl_local(&mut self, decls: &ast::Decl, body: &ast::Decl, span: Span) {
         self.with_scope(|ctx| {
             ctx.elaborate_decl(decls);
+            let prev = ctx.local;
+            ctx.local = true;
             ctx.elaborate_decl(body);
-            ctx.set_ns_span(span);
+            ctx.local = prev;
         })
     }
 
@@ -627,7 +642,8 @@ impl<'ar> Database<'ar> {
             }
             _ => {}
         }
-        self.set_ns_span(decl.span);
+        // Expand span
+        self.namespaces[self.current].span.end = decl.span.end;
     }
 }
 

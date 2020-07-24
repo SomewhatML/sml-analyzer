@@ -1,25 +1,24 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::time::Instant;
 
 use log::info;
 use lsp_types::{
-    request::{GotoDefinition, GotoDefinitionResponse},
+    notification::{DidChangeTextDocument, DidOpenTextDocument, DidSaveTextDocument},
+    request::{Completion, HoverRequest},
     InitializeParams, ServerCapabilities, *,
 };
 
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use serde::Serialize;
 
-use sml_frontend::{lexer::Lexer, tokens::Token};
-use sml_util::{
-    interner::*,
-    span::{Span, Spanned},
-};
+use sml_util::{interner::*, span::Span};
 
 use database::Database;
 
 mod cache;
 mod completions;
+mod dispatch;
 mod types;
 mod util;
 
@@ -35,7 +34,7 @@ struct GlobalState<'arena> {
     db: Database<'arena>,
 }
 
-pub fn diag_convert(mut diag: sml_util::diagnostics::Diagnostic) -> Diagnostic {
+pub fn diag_convert(diag: sml_util::diagnostics::Diagnostic) -> Diagnostic {
     let sp = diag.primary.span;
     let message = diag.primary.info;
     let range = Range::new(
@@ -43,6 +42,13 @@ pub fn diag_convert(mut diag: sml_util::diagnostics::Diagnostic) -> Diagnostic {
         Position::new(sp.end.line as u64, sp.end.col as u64),
     );
     Diagnostic::new_simple(range, message)
+}
+
+fn measure<T, F: FnOnce() -> T>(f: F) -> (T, u128) {
+    let start = Instant::now();
+    let r = f();
+    let stop = Instant::now().duration_since(start).as_micros();
+    (r, stop)
 }
 
 impl<'a> GlobalState<'a> {
@@ -53,8 +59,9 @@ impl<'a> GlobalState<'a> {
         };
 
         let mut parser = sml_frontend::parser::Parser::new(data, &mut self.interner);
+        let ((res, diags), dur) = measure(|| (parser.parse_decl(), parser.diags));
+        info!("parsing took {} us", dur);
 
-        let (res, diags) = (parser.parse_decl(), parser.diags);
         // let mut ctx = sml_core::elaborate::Context::new(&borrow);
         let mut st_diag = Vec::new();
         match res {
@@ -64,14 +71,14 @@ impl<'a> GlobalState<'a> {
                         st_diag.push(diag_convert(diag));
                     }
                 }
+                let (_, dur) = measure(|| self.db.elaborate_decl(&d));
 
-                self.db.elaborate_decl(&d);
-
-                info!("db types: {}", self.db.types.len());
+                info!("new elab took {} us", dur);
                 self.db.dump();
 
-                let (decls, diags) = sml_core::elaborate::check_and_elaborate(&self.arena, &d);
-
+                let ((decls, diags), dur) =
+                    measure(|| sml_core::elaborate::check_and_elaborate(&self.arena, &d));
+                info!("old elab took {} us", dur);
                 if !diags.is_empty() {
                     for diag in diags {
                         st_diag.push(diag_convert(diag));
@@ -144,29 +151,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             trigger_characters: Some(vec![".".to_string(), ':'.to_string()]),
             work_done_progress_options: Default::default(),
         }),
-        // signature_help_provider: Some(SignatureHelpOptions {
-        //     trigger_characters: Some(vec![" ".to_string()]),
-        //     retrigger_characters: None,
-        //     work_done_progress_options: Default::default(),
-        // }),
-
-        // document_highlight_provider: Some(true),
-        // workspace_symbol_provider: Some(true),
-        // execute_command_provider: Some(ExecuteCommandOptions {
-        //     commands: vec!["dummy.do_something".to_string()],
-        //     work_done_progress_options: Default::default(),
-        // }),
-        // workspace: Some(WorkspaceCapability {
-        //     workspace_folders: Some(WorkspaceFolderCapability {
-        //         supported: Some(true),
-        //         change_notifications: Some(
-        //             WorkspaceFolderCapabilityChangeNotifications::Bool(true),
-        //         ),
-        //     }),
-        // }),
-        // code_lens_provider: Some(CodeLensOptions {
-        //     resolve_provider: None,
-        // }),
         ..ServerCapabilities::default()
     };
 
@@ -197,6 +181,43 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     Ok(())
 }
 
+fn hover_request(state: &mut GlobalState, params: TextDocumentPositionParams) -> Option<Hover> {
+    state.def_cache.position_to_type(params.position).map(|ty| {
+        let mut alpha = types::Alpha::default();
+        let mut out = String::with_capacity(64);
+
+        alpha.write_type(ty, &state.interner, &mut out).unwrap();
+
+        Hover {
+            contents: HoverContents::Scalar(MarkedString::from_markdown(format!("type: {}", out))),
+            range: None,
+        }
+    })
+}
+
+fn completion_req(state: &mut GlobalState, params: CompletionParams) -> Option<CompletionResponse> {
+    params.context.map(
+        |ctx| match ctx.trigger_character.map(|s| s.chars().next()).flatten() {
+            Some('.') => CompletionResponse::Array(state.def_cache.completions(&state.interner)),
+            Some(':') => CompletionResponse::Array(state.ty_completions.clone()),
+            _ => {
+                let mut kw = state.def_cache.completions(&state.interner);
+                kw.extend(state.kw_completions.iter().cloned());
+
+                let mut it = CompletionItem::new_simple("Test".into(), "test".into());
+                it.documentation = Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: String::from("# Document\nParams:\n* Hello\n*Goodbye"),
+                }));
+                it.insert_text_format = Some(InsertTextFormat::Snippet);
+                it.insert_text = Some(String::from("test $1 ${2:foo}"));
+                kw.insert(0, it);
+                CompletionResponse::Array(kw)
+            }
+        },
+    )
+}
+
 fn main_loop<'arena>(
     connection: &Connection,
     params: serde_json::Value,
@@ -211,151 +232,34 @@ fn main_loop<'arena>(
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-                // info!("got request: {:?}", req);
-                let req = match cast::<GotoDefinition>(req) {
-                    Ok((id, params)) => {
-                        info!("got gotoDefinition request #{}: {:?}", id, params);
-                        let result = Some(GotoDefinitionResponse::Array(Vec::new()));
-                        let result = serde_json::to_value(&result).unwrap();
-                        let resp = Response {
-                            id,
-                            result: Some(result),
-                            error: None,
-                        };
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(req) => req,
-                };
 
-                let req = match cast::<request::HoverRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = state.def_cache.position_to_type(params.position).map(|ty| {
-                            let mut alpha = types::Alpha::default();
-                            let mut out = String::with_capacity(64);
-
-                            alpha.write_type(ty, &state.interner, &mut out).unwrap();
-
-                            Hover {
-                                contents: HoverContents::Scalar(MarkedString::from_markdown(
-                                    format!("type: {}", out),
-                                )),
-                                range: None,
-                            }
-                        });
-                        let result = serde_json::to_value(&result).unwrap();
-                        let resp = Response {
-                            id,
-                            result: Some(result),
-                            error: None,
-                        };
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(req) => req,
-                };
-
-                let req = match cast::<request::Completion>(req) {
-                    Ok((id, params)) => {
-                        let result = match params.context {
-                            Some(ctx) => {
-                                match ctx.trigger_character.map(|s| s.chars().next()).flatten() {
-                                    Some('.') => Some(CompletionResponse::Array(
-                                        state.def_cache.completions(&state.interner),
-                                    )),
-                                    Some(':') => Some(CompletionResponse::Array(
-                                        state.ty_completions.clone(),
-                                    )),
-                                    _ => {
-                                        let mut kw = state.def_cache.completions(&state.interner);
-                                        kw.extend(state.kw_completions.iter().cloned());
-
-                                        let mut it = CompletionItem::new_simple(
-                                            "Test".into(),
-                                            "test".into(),
-                                        );
-                                        it.documentation =
-                                            Some(Documentation::MarkupContent(MarkupContent {
-                                                kind: MarkupKind::Markdown,
-                                                value: String::from(
-                                                    "# Document\nParams:\n* Hello\n*Goodbye",
-                                                ),
-                                            }));
-                                        it.insert_text_format = Some(InsertTextFormat::Snippet);
-                                        it.insert_text = Some(String::from("test $1 ${2:foo}"));
-                                        kw.insert(0, it);
-                                        Some(CompletionResponse::Array(kw))
-                                    }
-                                }
-                            }
-                            _ => None,
-                        };
-
-                        let result = serde_json::to_value(&result).unwrap();
-                        let resp = Response {
-                            id,
-                            result: Some(result),
-                            error: None,
-                        };
-                        connection.sender.send(Message::Response(resp))?;
-
-                        continue;
-                    }
-                    Err(req) => req,
-                };
+                dispatch::request(req, &connection)
+                    .handle::<HoverRequest, _, _>(|params| hover_request(state, params))?
+                    .handle::<Completion, _, _>(|params| completion_req(state, params))?;
             }
             Message::Response(resp) => {
                 // info!("got response: {:?}", resp);
             }
             Message::Notification(not) => {
-                // info!("got notification: {:?}", not);
-                let not = match cast_not::<lsp_types::notification::DidOpenTextDocument>(not) {
-                    Ok(params) => {
+                dispatch::notification(not)
+                    .handle::<DidOpenTextDocument, _>(|params| {
                         *state
                             .text_cache
                             .entry(params.text_document.uri.clone())
-                            .or_default() = params.text_document.text.clone();
+                            .or_default() = params.text_document.text;
                         state.parse(&params.text_document.uri);
-                        continue;
-                    }
-                    Err(not) => not,
-                };
-                let not = match cast_not::<lsp_types::notification::DidChangeTextDocument>(not) {
-                    Ok(params) => {
+                    })
+                    .handle::<DidChangeTextDocument, _>(|params| {
                         match state.text_cache.get_mut(&params.text_document.uri) {
                             Some(data) => util::apply_changes(data, params.content_changes),
                             None => {}
                         }
-                        continue;
-                    }
-                    Err(not) => not,
-                };
-
-                let not = match cast_not::<notification::DidSaveTextDocument>(not) {
-                    Ok(params) => {
-                        state.parse(&params.text_document.uri);
-                        continue;
-                    }
-                    Err(not) => not,
-                };
+                    })
+                    .handle::<DidSaveTextDocument, _>(|params| {
+                        state.parse(&params.text_document.uri)
+                    });
             }
         }
     }
     Ok(())
-}
-
-fn cast<R>(req: Request) -> Result<(RequestId, R::Params), Request>
-where
-    R: lsp_types::request::Request,
-    R::Params: serde::de::DeserializeOwned,
-{
-    req.extract(R::METHOD)
-}
-
-fn cast_not<R>(req: Notification) -> Result<R::Params, Notification>
-where
-    R: lsp_types::notification::Notification,
-    R::Params: serde::de::DeserializeOwned,
-{
-    req.extract(R::METHOD)
 }

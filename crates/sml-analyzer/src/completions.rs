@@ -1,22 +1,54 @@
 use super::*;
 
 fn ty(s: &str) -> CompletionItem {
-    let mut c = CompletionItem::new_simple(s.into(), "SML type".into());
+    let mut c = CompletionItem::new_simple(s.into(), "primitive type".into());
     c.kind = Some(CompletionItemKind::TypeParameter);
     c
 }
 
 fn keyword(s: &str) -> CompletionItem {
-    let mut c = CompletionItem::new_simple(s.into(), "SML keyword".into());
+    let mut c = CompletionItem::new_simple(s.into(), "keyword".into());
     c.kind = Some(CompletionItemKind::Keyword);
     c
 }
 
-pub fn fun(s: &str, ty_str: &str) -> CompletionItem {
-    let mut c = CompletionItem::new_simple(s.into(), ty_str.into());
-    c.kind = Some(CompletionItemKind::Function);
-    // c.documentation = Some(Documentation::MarkupContent(MarkupContent ))
-    c
+mod snippets {
+    use super::*;
+
+    #[inline]
+    fn template(kw: &str, snippet: &str) -> CompletionItem {
+        CompletionItem {
+            label: kw.into(),
+            detail: Some(kw.into()),
+            kind: Some(CompletionItemKind::Keyword),
+            insert_text_format: Some(InsertTextFormat::Snippet),
+            insert_text: Some(format!("{} {}", kw, snippet)),
+            ..CompletionItem::default()
+        }
+    }
+
+    pub fn decl_let() -> CompletionItem {
+        template("let", "${1:declaration} in ${2:expr} end$0")
+    }
+
+    pub fn decl_local() -> CompletionItem {
+        template("local", "${1:declaration} in ${2:expr} end$0")
+    }
+
+    pub fn expr_case() -> CompletionItem {
+        template("case", "${1:expr} of\n| ${2:pat} => ${3:expr}\nend$0")
+    }
+
+    pub fn expr_fn() -> CompletionItem {
+        template("fn", "${1:arg} => ${0:body}")
+    }
+
+    pub fn expr_if() -> CompletionItem {
+        template(
+            "if",
+            "${1:condition} then ${2:consquence} else ${0:alternate}",
+        )
+    }
 }
 
 pub fn keyword_completions() -> Vec<CompletionItem> {
@@ -24,22 +56,22 @@ pub fn keyword_completions() -> Vec<CompletionItem> {
         keyword("and"),
         keyword("andalso"),
         keyword("as"),
-        keyword("case"),
+        snippets::expr_case(),
         keyword("datatype"),
         keyword("do"),
         keyword("else"),
         keyword("end"),
         keyword("exception"),
-        keyword("fn"),
+        snippets::expr_fn(),
         keyword("fun"),
         keyword("functor"),
         keyword("handle"),
-        keyword("if"),
+        snippets::expr_if(),
         keyword("in"),
         keyword("infix"),
         keyword("infixr"),
-        keyword("let"),
-        keyword("local"),
+        snippets::decl_let(),
+        snippets::decl_local(),
         keyword("nonfix"),
         keyword("of"),
         keyword("op"),

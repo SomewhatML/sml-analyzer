@@ -10,47 +10,47 @@ use sml_frontend::parser::precedence::{self, Fixity, Precedence, Query};
 use sml_util::diagnostics::Diagnostic;
 
 pub struct Database<'ar> {
-	// This vector contains all types defined throughout the program,
-	// regardless of scope. [`Namespace`] structs are required to determine
-	// which types are actually in scope
-	pub types: Vec<Spanned<TypeStructure<'ar>>>,
-	// And likewise for all values/bindings defined throughout the program
-	values: Vec<Spanned<ValueStructure<'ar>>>,
+    // This vector contains all types defined throughout the program,
+    // regardless of scope. [`Namespace`] structs are required to determine
+    // which types are actually in scope
+    pub types: Vec<Spanned<TypeStructure<'ar>>>,
+    // And likewise for all values/bindings defined throughout the program
+    values: Vec<Spanned<ValueStructure<'ar>>>,
 
-	// Index into `namespaces`, representing the current scope
-	current: usize,
-	// An append-only list of [`Namespace`] structs, but this is a not stack. 
-	// Namespaces should only be pushed onto the end, and never deleted or re-ordered
-	namespaces: Vec<Namespace>,
+    // Index into `namespaces`, representing the current scope
+    current: usize,
+    // An append-only list of [`Namespace`] structs, but this is a not stack.
+    // Namespaces should only be pushed onto the end, and never deleted or re-ordered
+    namespaces: Vec<Namespace>,
 
-	// Essentially tracks the current declaration depth. This allows us to perform
-	// rapid level-based type generalization
-	tyvar_rank: usize,
+    // Essentially tracks the current declaration depth. This allows us to perform
+    // rapid level-based type generalization
+    tyvar_rank: usize,
 
-	// stacks for alpha-renaming of explicity named type variables [x: 'a]
-	tyvars: Vec<(Symbol, &'ar TypeVar<'ar>)>,
+    // stacks for alpha-renaming of explicity named type variables [x: 'a]
+    tyvars: Vec<(Symbol, &'ar TypeVar<'ar>)>,
 
-	// Generate dummy variable names, mostly for error handling
-	gensym: Cell<usize>,
+    // Generate dummy variable names, mostly for error handling
+    gensym: Cell<usize>,
 
-	// Arena for type allocation
-	pub arena: &'ar Arena<'ar>,
+    // Arena for type allocation
+    pub arena: &'ar Arena<'ar>,
 
-	// Append-only vector of warnings/errors we generate
-	pub diags: Vec<Diagnostic>
+    // Append-only vector of warnings/errors we generate
+    pub diags: Vec<Diagnostic>,
 }
 
 /// An environment scope, that can hold a collection of type, expr, and infix bindings
-/// 
+///
 /// This typically corresponds to a source-level scope (e.g. function, let bindings)
 #[derive(Default, Debug)]
 pub struct Namespace {
     parent: Option<usize>,
     types: HashMap<Symbol, TypeId>,
     values: HashMap<Symbol, ExprId>,
-	infix: HashMap<Symbol, Fixity>,
-	
-	span: Span,
+    infix: HashMap<Symbol, Fixity>,
+
+    span: Span,
 }
 
 /// Identifier status for the Value Environment, as defined in the Defn.
@@ -65,8 +65,8 @@ pub enum IdStatus {
 /// constructors, and without the indirection of going from names->id->def
 #[derive(Clone)]
 pub struct Cons<'ar> {
-	name: Symbol,
-	span: Span,
+    name: Symbol,
+    span: Span,
     scheme: Scheme<'ar>,
 }
 
@@ -102,8 +102,8 @@ impl<'ar> TypeStructure<'ar> {
 }
 
 pub struct ValueStructure<'ar> {
-	scheme: Scheme<'ar>,
-	status: IdStatus
+    scheme: Scheme<'ar>,
+    status: IdStatus,
 }
 
 impl Namespace {
@@ -112,8 +112,8 @@ impl Namespace {
             parent: Some(id),
             types: HashMap::with_capacity(32),
             values: HashMap::with_capacity(64),
-			infix: HashMap::with_capacity(16),
-			span: Span::zero(),
+            infix: HashMap::with_capacity(16),
+            span: Span::zero(),
         }
     }
 }
@@ -124,8 +124,8 @@ impl<'ar> Database<'ar> {
             tyvars: Vec::default(),
             namespaces: Vec::default(),
             current: 0,
-			tyvar_rank: 0,
-			gensym: Cell::new(0),
+            tyvar_rank: 0,
+            gensym: Cell::new(0),
             types: Vec::default(),
             values: Vec::default(),
             diags: Vec::default(),
@@ -163,7 +163,12 @@ impl<'ar> Database<'ar> {
     }
 
     /// Globally define a type
-    pub(crate) fn define_type(&mut self, sym: Symbol, tystr: TypeStructure<'ar>, span: Span) -> TypeId {
+    pub(crate) fn define_type(
+        &mut self,
+        sym: Symbol,
+        tystr: TypeStructure<'ar>,
+        span: Span,
+    ) -> TypeId {
         let id = TypeId(self.types.len() as u32);
         self.types.push(Spanned::new(tystr, span));
         self.namespaces[self.current].types.insert(sym, id);
@@ -175,11 +180,12 @@ impl<'ar> Database<'ar> {
         &mut self,
         sym: Symbol,
         scheme: Scheme<'ar>,
-		status: IdStatus,
-		span: Span,
+        status: IdStatus,
+        span: Span,
     ) -> ExprId {
         let id = ExprId(self.values.len() as u32);
-        self.values.push(Spanned::new(ValueStructure { scheme, status }, span));
+        self.values
+            .push(Spanned::new(ValueStructure { scheme, status }, span));
         self.namespaces[self.current].values.insert(sym, id);
         id
     }
@@ -196,8 +202,8 @@ impl<'ar> Database<'ar> {
             .values
             .get(&sym)
             .expect("error: redefine_value");
-		let s = Scheme::Mono(self.fresh_tyvar());
-		
+        let s = Scheme::Mono(self.fresh_tyvar());
+
         std::mem::replace(&mut self.values[id.0 as usize].data.scheme, s);
     }
 
@@ -257,12 +263,12 @@ impl<'ar> Database<'ar> {
         self.arena.fresh_var(self.tyvar_rank)
     }
 
-	fn fresh_var(&self) -> Symbol {
-		let n = self.gensym.get();
-		let s = Symbol::Gensym(n as u32);
-		self.gensym.set(n + 1);
-		s
-	}
+    fn fresh_var(&self) -> Symbol {
+        let n = self.gensym.get();
+        let s = Symbol::Gensym(n as u32);
+        self.gensym.set(n + 1);
+        s
+    }
 
     fn const_ty(&self, c: &ast::Const) -> &'ar Type<'ar> {
         match c {
@@ -288,7 +294,7 @@ impl<'ar> Database<'ar> {
     }
 }
 
-impl<'ar> Database<'ar> {	
+impl<'ar> Database<'ar> {
     pub fn elaborate_type(&mut self, ty: &ast::Type, allow_unbound: bool) -> &'ar Type<'ar> {
         use ast::TypeKind::*;
         match &ty.data {
@@ -314,8 +320,8 @@ impl<'ar> Database<'ar> {
                         self.diags.push(Diagnostic::error(
                             ty.span,
                             format!("unbound type variable {:?}", s),
-						));
-						
+                        ));
+
                         TypeStructure::Tycon(Tycon {
                             name: self.fresh_var(),
                             arity: args.len(),
@@ -357,7 +363,6 @@ impl<'ar> Database<'ar> {
         self.namespaces[self.current].infix.insert(sym, fix);
     }
 
-
     fn elab_decl_type(&mut self, tbs: &[ast::Typebind]) {
         for typebind in tbs {
             let scheme = if !typebind.tyvars.is_empty() {
@@ -384,7 +389,11 @@ impl<'ar> Database<'ar> {
             } else {
                 Scheme::Mono(self.elaborate_type(&typebind.ty, false))
             };
-            self.define_type(typebind.tycon, TypeStructure::Scheme(scheme), typebind.ty.span);
+            self.define_type(
+                typebind.tycon,
+                TypeStructure::Scheme(scheme),
+                typebind.ty.span,
+            );
         }
     }
 
@@ -491,50 +500,47 @@ impl<'ar> Database<'ar> {
                     self.define_value(
                         exn.label,
                         Scheme::Mono(self.arena.arrow(ty, self.arena.exn())),
-						IdStatus::Exn(con),
-						exn.span
+                        IdStatus::Exn(con),
+                        exn.span,
                     );
                 }
                 None => {
                     self.define_value(
                         exn.label,
                         Scheme::Mono(self.arena.exn()),
-						IdStatus::Exn(con),
-						exn.span
+                        IdStatus::Exn(con),
+                        exn.span,
                     );
                 }
             }
         }
-	}
+    }
 
-	pub fn dump(&self) {
-		for Spanned { span, data } in &self.types {
-			info!("type defined @ {:?}", span)
-		}
-	}
-	
+    pub fn dump(&self) {
+        for Spanned { span, data } in &self.types {
+            info!("type defined @ {:?}", span)
+        }
+    }
 
     pub fn elaborate_decl(&mut self, decl: &ast::Decl) {
-		// info!("elab {:?}")
+        // info!("elab {:?}")
         match &decl.data {
             ast::DeclKind::Datatype(dbs) => self.elab_decl_datatype(dbs),
             ast::DeclKind::Type(tbs) => self.elab_decl_type(tbs),
             // ast::DeclKind::Function(tyvars, fbs) => self.elab_decl_fun(tyvars, fbs),
             // ast::DeclKind::Value(tyvars, pat, expr) => self.elab_decl_val(tyvars, pat, expr),
-			ast::DeclKind::Exception(exns) => self.elab_decl_exception(exns),
+            ast::DeclKind::Exception(exns) => self.elab_decl_exception(exns),
             // ast::DeclKind::Fixity(fixity, bp, sym) => self.elab_decl_fixity(fixity, *bp, *sym),
             // ast::DeclKind::Local(decls, body) => self.elab_decl_local(decls, body),
             ast::DeclKind::Seq(decls) => {
-				for d in decls {
-					self.elaborate_decl(d);
-				}
-			}
-			_ => {},
-
+                for d in decls {
+                    self.elaborate_decl(d);
+                }
+            }
+            _ => {}
         }
     }
 }
-
 
 impl<'ar> Query<ast::Pat> for &Database<'ar> {
     fn fixity(&self, t: &ast::Pat) -> Fixity {

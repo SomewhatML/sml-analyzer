@@ -82,4 +82,65 @@ impl Alpha {
             }
         }
     }
+
+    pub fn write_type2(
+        &mut self,
+        ty: &database::Type<'_>,
+        interner: &Interner,
+        f: &mut dyn std::fmt::Write,
+    ) -> std::fmt::Result {
+        match ty {
+            database::Type::Var(tvar) => match tvar.ty() {
+                Some(bound) => self.write_type2(bound, interner, f),
+                None => write!(f, "'{}", self.gen(tvar.id)),
+            },
+            database::Type::Con(tc, args) => match tc {
+                &database::builtin::tycons::T_ARROW => {
+                    self.write_type2(&args[0], interner, f)?;
+                    write!(f, " -> ")?;
+                    self.write_type2(&args[1], interner, f)
+                }
+                _ => {
+                    if args.is_empty() {
+                        write!(f, "{}", interner.get(tc.name).unwrap_or_else(|| "?"))
+                    } else {
+                        for arg in args {
+                            self.write_type2(*arg, interner, f)?;
+                            write!(f, " ")?;
+                        }
+                        write!(f, "{}", interner.get(tc.name).unwrap_or_else(|| "?"))
+                    }
+                }
+            },
+            database::Type::Record(fields) => {
+                let tuple = match fields.get(0) {
+                    Some(database::Row {
+                        label: Symbol::Tuple(_),
+                        ..
+                    }) => true,
+                    _ => false,
+                };
+
+                if tuple {
+                    write!(f, "(")?;
+                } else {
+                    write!(f, "{{")?;
+                }
+                for (idx, field) in fields.iter().enumerate() {
+                    if !tuple {
+                        write!(f, "{}:", interner.get(field.label).unwrap_or_else(|| "?"))?;
+                    }
+                    self.write_type2(field.data, interner, f)?;
+                    if idx != fields.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                if tuple {
+                    write!(f, ")")
+                } else {
+                    write!(f, "}}")
+                }
+            }
+        }
+    }
 }

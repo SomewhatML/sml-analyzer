@@ -118,6 +118,22 @@ impl Namespace {
     }
 }
 
+/// Iterator over the namespace hierarchy, proceeding towards the root namespace
+pub struct NamespaceIter<'db, 'ar> {
+    ctx: &'db Database<'ar>,
+    ptr: Option<usize>,
+}
+
+impl<'db, 'ar> Iterator for NamespaceIter<'db, 'ar> {
+    type Item = &'db Namespace;
+    fn next(&mut self) -> Option<Self::Item> {
+        let n = self.ptr?;
+        let ns = &self.ctx.namespaces[n];
+        self.ptr = ns.parent;
+        Some(ns)
+    }
+}
+
 impl<'ar> Database<'ar> {
     pub fn new(arena: &'ar Arena<'ar>) -> Database<'ar> {
         let mut ctx = Database {
@@ -132,8 +148,8 @@ impl<'ar> Database<'ar> {
             arena,
         };
         ctx.namespaces.push(Namespace::default());
-        // builtin::populate_Database(&mut ctx);
-        // ctx.elab_decl_fixity(&ast::Fixity::Infixr, 4, constructors::C_CONS.name);
+        builtin::populate_context(&mut ctx);
+        ctx.elab_decl_fixity(&ast::Fixity::Infixr, 4, builtin::constructors::C_CONS.name);
         ctx
     }
     /// Keep track of the type variable stack, while executing the combinator
@@ -160,6 +176,76 @@ impl<'ar> Database<'ar> {
 
         self.current = prev;
         r
+    }
+
+    /// Set the [`Span`] of the current [`Namespace`]
+    fn set_ns_span(&mut self, span: Span) {
+        self.namespaces[self.current].span = span;
+    }
+
+    /// Naively find the [`Namespace`] idx belonging to a [`Span`]
+    fn get_ns_span(&self, loc: Location) -> usize {
+        self.namespaces
+            .iter()
+            .enumerate()
+            .filter(|(_, ns)| in_span(&loc, &ns.span))
+            .last()
+            .map(|(idx, _)| idx)
+            .unwrap_or_default()
+    }
+
+    pub fn in_scope_types(&self, loc: Location) -> Vec<(Symbol, Option<&'ar Type<'ar>>)> {
+        let mut v = Vec::new();
+        let iter = NamespaceIter {
+            ctx: &self,
+            ptr: Some(self.get_ns_span(loc)),
+        };
+        for ns in iter {
+            for (sym, id) in &ns.types {
+                if let Some(Spanned { span, data }) = self.types.get(id.0 as usize) {
+                    let inst = match data {
+                        TypeStructure::Tycon(_) => None,
+                        TypeStructure::Scheme(s) => Some(self.instantiate(&s)),
+                        TypeStructure::Datatype(_, cons) => None,
+                    };
+                    if loc.line >= span.start.line {
+                        v.push((*sym, inst));
+                    }
+                }
+            }
+        }
+
+        v
+    }
+
+    pub fn instantiate(&self, scheme: &Scheme<'ar>) -> &'ar Type<'ar> {
+        match scheme {
+            Scheme::Mono(ty) => ty,
+            Scheme::Poly(vars, ty) => {
+                let map = vars.into_iter().map(|v| (*v, self.fresh_tyvar())).collect();
+                ty.apply(&self.arena, &map)
+            }
+        }
+    }
+
+    pub fn in_scope_values(&self, loc: Location) -> Vec<(Symbol, &'ar Type<'ar>)> {
+        let mut v = Vec::new();
+        let iter = NamespaceIter {
+            ctx: &self,
+            ptr: Some(self.get_ns_span(loc)),
+        };
+        for ns in iter {
+            for (sym, id) in &ns.values {
+                if let Some(Spanned { span, data }) = self.values.get(id.0 as usize) {
+                    let inst = self.instantiate(&data.scheme);
+                    if loc.line >= span.start.line {
+                        v.push((*sym, inst));
+                    }
+                }
+            }
+        }
+
+        v
     }
 
     /// Globally define a type
@@ -539,6 +625,7 @@ impl<'ar> Database<'ar> {
             }
             _ => {}
         }
+        self.set_ns_span(decl.span);
     }
 }
 

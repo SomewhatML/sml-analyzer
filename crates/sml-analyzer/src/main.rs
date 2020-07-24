@@ -25,7 +25,6 @@ mod util;
 struct GlobalState<'arena> {
     text_cache: HashMap<lsp_types::Url, String>,
     kw_completions: Vec<CompletionItem>,
-    ty_completions: Vec<CompletionItem>,
     interner: Interner,
     sender: crossbeam_channel::Sender<lsp_server::Message>,
     def_cache: cache::Definitions<'arena>,
@@ -165,7 +164,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut state = GlobalState {
         text_cache: HashMap::default(),
         kw_completions: completions::keyword_completions(),
-        ty_completions: completions::builtin_ty_completions(),
         interner: Interner::with_capacity(4096),
         sender: connection.sender.clone(),
         arena: &owned_arena.borrow(),
@@ -195,24 +193,63 @@ fn hover_request(state: &mut GlobalState, params: TextDocumentPositionParams) ->
     })
 }
 
+fn map_ve(inter: &Interner, sym: Symbol, ty: &database::Type<'_>) -> Option<CompletionItem> {
+    let name = inter.get(sym)?;
+    let mut alpha = types::Alpha::default();
+    let mut out = String::new();
+    alpha.write_type2(ty, inter, &mut out);
+
+    let mut c = CompletionItem::new_simple(name.into(), format!("{}: {}", name, out));
+    c.kind = Some(CompletionItemKind::Value);
+    Some(c)
+}
+
+fn map_te(
+    inter: &Interner,
+    sym: Symbol,
+    ty: Option<&database::Type<'_>>,
+) -> Option<CompletionItem> {
+    let name = inter.get(sym)?;
+    let mut c = if let Some(ty) = ty {
+        let mut alpha = types::Alpha::default();
+        let mut out = String::new();
+        alpha.write_type2(ty, inter, &mut out);
+        CompletionItem::new_simple(name.into(), format!("{}: {}", name, out))
+    } else {
+        CompletionItem::new_simple(name.into(), format!("{}", name))
+    };
+    c.kind = Some(CompletionItemKind::TypeParameter);
+    Some(c)
+}
+
 fn completion_req(state: &mut GlobalState, params: CompletionParams) -> Option<CompletionResponse> {
+    let pos = params.text_document_position.position;
+    let loc = sml_util::span::Location::new(pos.line as u16, pos.character as u16, 0);
     params.context.map(
         |ctx| match ctx.trigger_character.map(|s| s.chars().next()).flatten() {
             Some('.') => CompletionResponse::Array(state.def_cache.completions(&state.interner)),
-            Some(':') => CompletionResponse::Array(state.ty_completions.clone()),
+            Some(':') => {
+                let tycons = state
+                    .db
+                    .in_scope_types(loc)
+                    .into_iter()
+                    .filter_map(|(sym, ty)| map_te(&state.interner, sym, ty))
+                    .collect::<Vec<CompletionItem>>();
+                CompletionResponse::Array(tycons)
+            }
             _ => {
-                let mut kw = state.def_cache.completions(&state.interner);
-                kw.extend(state.kw_completions.iter().cloned());
+                // let mut kw = state.def_cache.completions(&state.interner);
 
-                let mut it = CompletionItem::new_simple("Test".into(), "test".into());
-                it.documentation = Some(Documentation::MarkupContent(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: String::from("# Document\nParams:\n* Hello\n*Goodbye"),
-                }));
-                it.insert_text_format = Some(InsertTextFormat::Snippet);
-                it.insert_text = Some(String::from("test $1 ${2:foo}"));
-                kw.insert(0, it);
-                CompletionResponse::Array(kw)
+                // kw.extend(state.kw_completions.iter().cloned());
+                let tycons = state
+                    .db
+                    .in_scope_values(loc)
+                    .into_iter()
+                    .filter_map(|(sym, ty)| map_ve(&state.interner, sym, ty))
+                    .chain(state.kw_completions.clone())
+                    .collect::<Vec<CompletionItem>>();
+
+                CompletionResponse::Array(tycons)
             }
         },
     )

@@ -38,6 +38,13 @@ pub enum Scheme<'ar> {
 }
 
 impl<'ar> Type<'ar> {
+    pub fn tyvar_id(&self) -> usize {
+        match self {
+            Type::Var(tv) => tv.id,
+            _ => panic!("internal compiler bug"),
+        }
+    }
+
     /// 'de-arrow' an arrow type, returning the argument and result type
     pub fn de_arrow(&self) -> Option<(&'_ Type<'ar>, &'_ Type<'ar>)> {
         match self {

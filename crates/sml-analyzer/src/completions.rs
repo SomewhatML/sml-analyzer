@@ -92,15 +92,3 @@ pub fn keyword_completions() -> Vec<CompletionItem> {
         keyword("structure"),
     ]
 }
-
-pub fn builtin_ty_completions() -> Vec<CompletionItem> {
-    vec![
-        ty("unit"),
-        ty("int"),
-        ty("bool"),
-        ty("char"),
-        ty("string"),
-        ty("list"),
-        ty("ref"),
-    ]
-}

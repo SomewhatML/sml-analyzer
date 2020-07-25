@@ -10,7 +10,7 @@ use sml_util::span::{Location, Span, Spanned};
 pub use types::*;
 
 pub use check::Check;
-pub use database::Database;
+pub use database::{CantUnify, Database};
 
 #[inline]
 fn in_span(pos: &Location, span: &Span) -> bool {

@@ -72,6 +72,13 @@ impl<'a> GlobalState<'a> {
                 let (_, dur) = measure(|| self.db.walk_decl(&d));
                 // info!("new elab took {} us", dur);
 
+                let unify_errs = std::mem::replace(&mut self.db.unification_errors, Vec::new());
+                st_diag.extend(
+                    unify_errs
+                        .into_iter()
+                        .filter_map(|c| types::unify_error(c, &self.interner)),
+                );
+
                 let diags = std::mem::replace(&mut self.db.diags, Vec::new());
                 if !diags.is_empty() {
                     for diag in diags {

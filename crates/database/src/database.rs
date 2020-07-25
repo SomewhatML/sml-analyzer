@@ -860,8 +860,7 @@ impl<'ar> Database<'ar> {
 
                 let f = self.fresh_tyvar();
                 self.unify(ty1, self.arena.arrow(ty2, f), &|c| {
-                    c.span(e1.span)
-                        .add_message("expected function in application")
+                    c.span(e1.span).add_message("incorrect function arguments")
                 });
                 self.bindings.push((expr.span, f));
                 f

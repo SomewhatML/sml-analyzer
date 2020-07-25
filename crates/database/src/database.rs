@@ -47,12 +47,48 @@ pub struct Database<'ar> {
 }
 
 pub struct CantUnify<'ar> {
-    ty1: &'ar Type<'ar>,
-    ty2: &'ar Type<'ar>,
-    sp1: Option<Span>,
-    sp2: Option<Span>,
-    message: String,
-    originating: Span,
+    pub ty1: &'ar Type<'ar>,
+    pub ty2: &'ar Type<'ar>,
+    pub sp1: Option<Span>,
+    pub sp2: Option<Span>,
+    pub message: String,
+    pub reason: String,
+    pub originating: Option<Span>,
+}
+
+impl<'ar> CantUnify<'ar> {
+    pub fn new(ty1: &'ar Type<'ar>, ty2: &'ar Type<'ar>) -> CantUnify<'ar> {
+        CantUnify {
+            ty1,
+            ty2,
+            sp1: None,
+            sp2: None,
+            message: String::new(),
+            reason: String::new(),
+            originating: None,
+        }
+    }
+
+    pub fn add_message<S: Into<String>>(mut self, s: S) -> Self {
+        self.message = s.into();
+        self
+    }
+
+    pub fn add_reason<S: Into<String>>(mut self, s: S) -> Self {
+        self.reason = s.into();
+        self
+    }
+
+    pub fn span(mut self, sp: Span) -> Self {
+        self.originating = Some(sp);
+        self
+    }
+
+    pub fn add_spans(mut self, s1: Span, s2: Span) -> Self {
+        self.sp1 = Some(s1);
+        self.sp2 = Some(s2);
+        self
+    }
 }
 
 /// An environment scope, that can hold a collection of type, expr, and infix bindings
@@ -116,6 +152,7 @@ impl<'ar> TypeStructure<'ar> {
     }
 }
 
+#[derive(Clone)]
 pub struct ValueStructure<'ar> {
     scheme: Scheme<'ar>,
     status: IdStatus,
@@ -153,9 +190,6 @@ impl<'db, 'ar> Iterator for NamespaceIter<'db, 'ar> {
 struct PartialFun<'s, 'ar> {
     name: Symbol,
     clauses: Vec<PartialFnBinding<'s, 'ar>>,
-    arity: usize,
-    /// Argument types, invariant that |arg_tys| = arity
-    arg_tys: Vec<&'ar Type<'ar>>,
     /// The resulting type
     res_ty: &'ar Type<'ar>,
     /// The overall flattened type, where for each ty_i in args, we have
@@ -167,8 +201,6 @@ struct PartialFun<'s, 'ar> {
 struct PartialFnBinding<'s, 'ar> {
     /// Function body
     expr: &'s ast::Expr,
-    /// List of bound patterns `fun merge xs ys` = [xs, ys]
-    pats: Vec<&'s ast::Pat>,
     /// A list of variables bound in `pats`, and fresh type variables
     /// to be associated with those symbols
     bindings: Vec<(Spanned<Symbol>, &'ar Type<'ar>)>,
@@ -421,7 +453,10 @@ impl<'ar> Database<'ar> {
 
 impl<'ar> Database<'ar> {
     /// Note that this can only be called once per type variable!
-    fn bind(&mut self, sp: Span, var: &'ar TypeVar<'ar>, ty: &'ar Type<'ar>) {
+    fn bind<F>(&mut self, var: &'ar TypeVar<'ar>, ty: &'ar Type<'ar>, f: &F)
+    where
+        F: Fn() -> CantUnify<'ar>,
+    {
         if let Type::Var(v2) = ty {
             // TODO: Ensure that testing on id alone is ok - I believe it should be
             if v2.id == var.id {
@@ -429,93 +464,68 @@ impl<'ar> Database<'ar> {
             }
         }
         if ty.occurs_check(var) {
-            self.diags
-                .push(Diagnostic::error(sp, "Cyclic type detected"));
-            return;
+            let err = f().add_reason("Cyclic type detected");
+            self.unification_errors.push(err);
         }
 
         var.data.set(Some(ty));
     }
 
-    pub fn unify(&mut self, sp: Span, a: &'ar Type<'ar>, b: &'ar Type<'ar>) {
+    pub fn unify<F>(&mut self, a: &'ar Type<'ar>, b: &'ar Type<'ar>, f: &F)
+    where
+        F: Fn(CantUnify<'ar>) -> CantUnify<'ar>,
+    {
         match (a, b) {
             (Type::Var(a1), Type::Var(b1)) => match (a1.ty(), b1.ty()) {
-                (Some(a), Some(b)) => self.unify(sp, a, b),
-                (Some(a), None) => self.unify(sp, a, b),
-                (None, Some(b)) => self.unify(sp, a, b),
-                (None, None) => self.bind(sp, a1, b),
+                (Some(a), Some(b)) => self.unify(a, b, f),
+                (Some(a), None) => self.unify(a, b, f),
+                (None, Some(b)) => self.unify(a, b, f),
+                (None, None) => self.bind(a1, b, &|| f(CantUnify::new(a, b))),
             },
-            (Type::Var(a), b) => match a.ty() {
-                Some(ty) => self.unify(sp, ty, b),
-                None => self.bind(sp, a, b),
+            (Type::Var(a_var), b) => match a_var.ty() {
+                Some(ty) => self.unify(ty, b, f),
+                None => self.bind(a_var, b, &|| f(CantUnify::new(a, b))),
             },
-            (a, Type::Var(b)) => match b.ty() {
-                Some(ty) => self.unify(sp, a, ty),
-                None => self.bind(sp, b, a),
+            (a, Type::Var(b_var)) => match b_var.ty() {
+                Some(ty) => self.unify(a, ty, f),
+                None => self.bind(b_var, a, &|| f(CantUnify::new(a, b))),
             },
-            (Type::Con(a, a_args), Type::Con(b, b_args)) => {
-                if a != b {
-                    self.diags.push(Diagnostic::error(
-                        sp,
-                        format!(
-                            "Can't unify type constructors {:?} and {:?}",
-                            a.name, b.name
-                        ),
-                    ))
+            (Type::Con(tc1, a_args), Type::Con(tc2, b_args)) => {
+                if tc1 != tc2 {
+                    let err = f(CantUnify::new(a, b)).add_reason("Type constructors differ");
+                    self.unification_errors.push(err);
                 } else if a_args.len() != b_args.len() {
-                    // self.diags.push(
-                    //     Diagnostic::error(
-                    //         sp,
-                    //         "Can't unify type constructors with different argument lengths",
-                    //     )
-                    //     .message(sp, format!("{:?} has arguments: {:?}", a, a_args))
-                    //     .message(sp, format!("and {:?} has arguments: {:?}", b, b_args)),
-                    // )
+                    let err = f(CantUnify::new(a, b))
+                        .add_reason("Argument lengths to type constructors differ");
+                    self.unification_errors.push(err);
                 } else {
                     for (c, d) in a_args.into_iter().zip(b_args) {
-                        self.unify(sp, c, d);
+                        self.unify(c, d, f);
                     }
                 }
             }
             (Type::Record(r1), Type::Record(r2)) => {
                 if r1.len() != r2.len() {
-                    // return self.diags.push(
-                    //     Diagnostic::error(
-                    //         sp,
-                    //         "Can't unify record types with different number of fields",
-                    //     )
-                    //     .message(sp, format!("type {:?}", a))
-                    //     .message(sp, format!("type {:?}", b)),
-                    // );
+                    let err = f(CantUnify::new(a, b))
+                        .add_reason("Record types have differing number of fields");
+                    self.unification_errors.push(err);
                     return;
                 }
 
                 for (ra, rb) in r1.iter().zip(r2.iter()) {
                     if ra.label != rb.label {
-                        // return self.diags.push(
-                        //     Diagnostic::error(sp, "Can't unify record types")
-                        //         .message(
-                        //             ra.span,
-                        //             format!("label '{:?}' from type {:?}", ra.label, a),
-                        //         )
-                        //         .message(
-                        //             rb.span,
-                        //             format!(
-                        //                 "doesn't match label '{:?}' from type {:?}",
-                        //                 rb.label, b
-                        //             ),
-                        //         ),
-                        // );
+                        let err = f(CantUnify::new(&ra.data, &rb.data))
+                            .add_reason("Record types have identical fields with differing types")
+                            .add_spans(ra.span, rb.span);
+                        self.unification_errors.push(err);
                         return;
                     }
-                    self.unify(sp, &ra.data, &rb.data)
+                    self.unify(&ra.data, &rb.data, f);
                 }
             }
             (a, b) => {
-                //     self.diags.push(Diagnostic::error(
-                //     sp,
-                //     format!("Can't unify types {:?} and {:?}", a, b),
-                // ))
+                let err = f(CantUnify::new(a, b)).add_reason("Can't unify these types");
+                self.unification_errors.push(err);
             }
         }
     }
@@ -523,7 +533,9 @@ impl<'ar> Database<'ar> {
     pub fn unify_list(&mut self, sp: Span, tys: &[&'ar Type<'ar>]) {
         let fst = &tys[0];
         for ty in tys {
-            self.unify(sp, ty, fst);
+            self.unify(ty, fst, &|c| {
+                c.span(sp).add_message("List has items of differing types")
+            });
         }
     }
 
@@ -641,15 +653,15 @@ impl<'ar> Database<'ar> {
         use ast::PatKind::*;
         match &pat.data {
             App(con, p) => {
-                let p = self.walk_pat_inner(p, bind, bindings);
-                match self.lookup_value(con) {
+                let arg_ty = self.walk_pat_inner(p, bind, bindings);
+                match self.lookup_value(con).cloned() {
                     Some(Spanned {
                         data:
                             ValueStructure {
                                 scheme,
                                 status: IdStatus::Con(_),
                             },
-                        ..
+                        span,
                     }) => {
                         let inst = self.instantiate(&scheme);
 
@@ -658,11 +670,19 @@ impl<'ar> Database<'ar> {
                             None => {
                                 let (dom, rng) = (self.fresh_tyvar(), self.fresh_tyvar());
                                 let arr = self.arena.arrow(dom, rng);
-                                self.unify(pat.span, inst, &arr);
+                                self.unify(inst, arr, &|c| {
+                                    c.span(pat.span).add_message(
+                                        "expected pattern contructor to take arguments",
+                                    )
+                                });
                                 (dom, rng)
                             }
                         };
-                        self.unify(pat.span, arg, p);
+                        self.unify(arg, arg_ty, &|c| {
+                            c.span(pat.span)
+                                .add_spans(p.span, span)
+                                .add_message("argument to constructor is the wrong type")
+                        });
                         self.bindings.push((pat.span, res));
                         res
                     }
@@ -678,11 +698,15 @@ impl<'ar> Database<'ar> {
                 }
             }
             Ascribe(p, ty) => {
-                let p = self.walk_pat_inner(p, bind, bindings);
-                let ty = self.walk_type(ty, true);
-                self.unify(pat.span, p, &ty);
-                self.bindings.push((pat.span, ty));
-                ty
+                let ty1 = self.walk_pat_inner(p, bind, bindings);
+                let ty2 = self.walk_type(ty, true);
+                self.unify(ty1, ty2, &|c| {
+                    c.span(pat.span)
+                        .add_spans(p.span, ty.span)
+                        .add_message("pattern type and ascribed type differ")
+                });
+                self.bindings.push((pat.span, ty2));
+                ty2
             }
             Const(c) => self.const_ty(c),
             FlatApp(pats) => {
@@ -752,7 +776,7 @@ impl<'ar> Database<'ar> {
                     data:
                         ValueStructure {
                             scheme,
-                            status: IdStatus::Exn(c),
+                            status: IdStatus::Exn(_),
                         },
                 })
                 | Some(Spanned {
@@ -760,7 +784,7 @@ impl<'ar> Database<'ar> {
                     data:
                         ValueStructure {
                             scheme,
-                            status: IdStatus::Con(c),
+                            status: IdStatus::Con(_),
                         },
                 }) => self.instantiate(scheme),
                 _ => {
@@ -819,8 +843,14 @@ impl<'ar> Database<'ar> {
             ast::ExprKind::Andalso(e1, e2) => {
                 let ty1 = self.walk_expr(e1);
                 let ty2 = self.walk_expr(e2);
-                self.unify(e1.span, ty1, self.arena.bool());
-                self.unify(e2.span, ty2, self.arena.bool());
+                self.unify(ty1, self.arena.bool(), &|c| {
+                    c.span(e1.span)
+                        .add_message("expected bool expression in `andalso`")
+                });
+                self.unify(ty2, self.arena.bool(), &|c| {
+                    c.span(e2.span)
+                        .add_message("expected bool expression in `andalso`")
+                });
                 self.bindings.push((expr.span, ty1));
                 ty1
             }
@@ -829,26 +859,34 @@ impl<'ar> Database<'ar> {
                 let ty2 = self.walk_expr(e2);
 
                 let f = self.fresh_tyvar();
-                self.unify(expr.span, ty1, self.arena.arrow(ty2, f));
+                self.unify(ty1, self.arena.arrow(ty2, f), &|c| {
+                    c.span(e1.span)
+                        .add_message("expected function in application")
+                });
                 self.bindings.push((expr.span, f));
                 f
             }
             ast::ExprKind::Case(scrutinee, rules) => {
                 let casee = self.walk_expr(scrutinee);
 
-                let (rules, ty) = self.elab_rules(expr.span, rules);
+                let (_, ty) = self.elab_rules(expr.span, rules);
 
                 let (arg, res) = match ty.de_arrow() {
                     Some((a, r)) => (a, r),
                     None => {
                         let (dom, rng) = (self.fresh_tyvar(), self.fresh_tyvar());
                         let arr = self.arena.arrow(dom, rng);
-                        self.unify(expr.span, ty, arr);
+                        self.unify(ty, arr, &|c| {
+                            c.span(expr.span).add_message("mistyped match rule")
+                        });
                         (dom, rng)
                     }
                 };
 
-                self.unify(scrutinee.span, casee, arg);
+                self.unify(casee, arg, &|c| {
+                    c.span(scrutinee.span)
+                        .add_message("`case` expression and patterns don't have the same type")
+                });
                 self.bindings.push((expr.span, res));
                 res
             }
@@ -858,11 +896,14 @@ impl<'ar> Database<'ar> {
                 ty
             }
             ast::ExprKind::Constraint(ex, ty) => {
-                let ex = self.walk_expr(ex);
-                let ty = self.walk_type(ty, false);
-                self.unify(expr.span, ex, ty);
-                self.bindings.push((expr.span, ex));
-                ex
+                let ty1 = self.walk_expr(ex);
+                let ty2 = self.walk_type(ty, false);
+                self.unify(ty1, ty2, &|c| {
+                    c.span(expr.span)
+                        .add_message("expression type and type constraint differ")
+                });
+                self.bindings.push((expr.span, ty1));
+                ty1
             }
             ast::ExprKind::FlatApp(exprs) => {
                 let p = match self.expr_precedence(exprs.clone()) {
@@ -899,36 +940,34 @@ impl<'ar> Database<'ar> {
                 ty
             }
             ast::ExprKind::Fn(rules) => {
-                let (rules, ty) = self.elab_rules(expr.span, rules);
-
-                let (arg, res) = match ty.de_arrow() {
-                    Some((a, r)) => (a, r),
-                    None => {
-                        let (dom, rng) = (self.fresh_tyvar(), self.fresh_tyvar());
-                        let arr = self.arena.arrow(dom, rng);
-                        self.unify(expr.span, &ty, &arr);
-                        (dom, rng)
-                    }
-                };
+                let (_, ty) = self.elab_rules(expr.span, rules);
                 self.bindings.push((expr.span, ty));
                 ty
             }
             ast::ExprKind::Handle(ex, rules) => {
                 let ex = self.walk_expr(ex);
-                let (rules, ty) = self.elab_rules(expr.span, rules);
+                let (_, ty) = self.elab_rules(expr.span, rules);
 
                 let (arg, res) = match ty.de_arrow() {
                     Some((a, r)) => (a, r),
                     None => {
                         let (dom, rng) = (self.fresh_tyvar(), self.fresh_tyvar());
                         let arr = self.arena.arrow(dom, rng);
-                        self.unify(expr.span, &ty, &arr);
+                        self.unify(ty, arr, &|c| {
+                            c.span(expr.span).add_message("mistyped match rule")
+                        });
                         (dom, rng)
                     }
                 };
 
-                self.unify(expr.span, ex, res);
-                self.unify(expr.span, arg, self.arena.exn());
+                self.unify(ex, res, &|c| {
+                    c.span(expr.span)
+                        .add_message("mismatch in return type of `handle`")
+                });
+                self.unify(arg, self.arena.exn(), &|c| {
+                    c.span(expr.span)
+                        .add_message("non-exception in `handle` rule")
+                });
                 self.bindings.push((expr.span, res));
                 res
             }
@@ -936,8 +975,15 @@ impl<'ar> Database<'ar> {
                 let ty1 = self.walk_expr(e1);
                 let ty2 = self.walk_expr(e2);
                 let ty3 = self.walk_expr(e3);
-                self.unify(e1.span, ty1, self.arena.bool());
-                self.unify(e2.span, ty2, ty3);
+                self.unify(ty1, self.arena.bool(), &|c| {
+                    c.span(e1.span)
+                        .add_message("expected bool expression in `if`")
+                });
+                self.unify(ty2, ty2, &|c| {
+                    c.span(expr.span)
+                        .add_spans(e2.span, e3.span)
+                        .add_message("`if` arms don't have the same type")
+                });
                 self.bindings.push((expr.span, ty2));
                 ty2
             }
@@ -966,8 +1012,14 @@ impl<'ar> Database<'ar> {
             ast::ExprKind::Orelse(e1, e2) => {
                 let ty1 = self.walk_expr(e1);
                 let ty2 = self.walk_expr(e2);
-                self.unify(e1.span, ty1, self.arena.bool());
-                self.unify(e2.span, ty2, self.arena.bool());
+                self.unify(ty1, self.arena.bool(), &|c| {
+                    c.span(e1.span)
+                        .add_message("expected bool expression in `orelse`")
+                });
+                self.unify(ty2, self.arena.bool(), &|c| {
+                    c.span(e2.span)
+                        .add_message("expected bool expression in `orelse`")
+                });
                 self.bindings.push((expr.span, ty1));
                 ty1
             }
@@ -980,7 +1032,10 @@ impl<'ar> Database<'ar> {
             ast::ExprKind::Raise(expr) => {
                 let ty = self.fresh_tyvar();
                 let ex = self.walk_expr(expr);
-                self.unify(expr.span, ex, self.arena.exn());
+                self.unify(ex, self.arena.exn(), &|c| {
+                    c.span(expr.span)
+                        .add_message("can't `raise` a non-exception type")
+                });
                 self.bindings.push((expr.span, ty));
                 ty
             }
@@ -1020,7 +1075,10 @@ impl<'ar> Database<'ar> {
                 for (idx, ex) in exprs.iter().enumerate() {
                     if idx != exprs.len() - 1 {
                         let ety = self.walk_expr(ex);
-                        self.unify(ex.span, ety, ty);
+                        self.unify(ety, ty, &|c| {
+                            c.span(ex.span)
+                                .add_message("expressions in sequence must return `unit`")
+                        });
                     } else {
                         ty = self.walk_expr(ex);
                     }
@@ -1231,25 +1289,29 @@ impl<'ar> Database<'ar> {
         for clause in fbs {
             if let Some(ty) = &clause.res_ty {
                 let t = self.walk_type(&ty, false);
-                self.unify(ty.span, &res_ty, &t);
-                // .map_err(|diag| {
-                //     diag.message(clause.span, format!("function clause with result constraint of different type: expected {:?}, got {:?}", &res_ty, &t))
-                // });
+                self.unify(res_ty, t, &|c| {
+                    c.span(ty.span)
+                        .add_message("function clause with result constraint of different type")
+                });
             }
 
-            let mut pats = Vec::new();
             let mut bindings = Vec::new();
             for (idx, pat) in clause.pats.iter().enumerate() {
+                if idx >= arity {
+                    self.diags.push(Diagnostic::error(
+                        pat.span,
+                        "function clause with wrong number of arguments",
+                    ));
+                    continue;
+                }
                 let pat_ty = self.walk_pat_inner(pat, false, &mut bindings);
-                self.unify(pat.span, &arg_tys[idx], pat_ty);
-                // .map_err(|diag| {
-                //     diag.message(clause.span, format!("function clause with argument of different type: expected {:?}, got {:?}", &arg_tys[0], &pat.ty))
-                // });
-                pats.push(pat);
+                self.unify(&arg_tys[idx], pat_ty, &|c| {
+                    c.span(pat.span)
+                        .add_message("function clause with argument of different type")
+                });
             }
             clauses.push(PartialFnBinding {
                 expr: &clause.expr,
-                pats,
                 bindings,
                 span: clause.span,
             })
@@ -1263,8 +1325,6 @@ impl<'ar> Database<'ar> {
         PartialFun {
             name,
             clauses,
-            arity,
-            arg_tys,
             res_ty,
             ty,
         }
@@ -1274,17 +1334,13 @@ impl<'ar> Database<'ar> {
         let PartialFun {
             clauses,
             res_ty,
-            arg_tys,
-            arity,
             name,
             ty,
-            ..
         } = fun;
 
         let mut fun_span = clauses[0].span;
         // Destructure so that we can move `bindings` into a closure
         for PartialFnBinding {
-            mut pats,
             expr,
             bindings,
             span,
@@ -1301,7 +1357,10 @@ impl<'ar> Database<'ar> {
             });
             self.tyvar_rank -= 1;
             // Unify function clause body with result type
-            self.unify(span, &res_ty, &expr);
+            self.unify(res_ty, expr, &|c| {
+                c.span(span)
+                    .add_message("function clause returns a different type")
+            });
             fun_span += span;
         }
 
@@ -1371,7 +1430,10 @@ impl<'ar> Database<'ar> {
             // FIXME: add to sml_frontend::ast?
             let non_expansive = true;
 
-            ctx.unify(expr.span, pat_ty, expr_ty);
+            ctx.unify(pat_ty, expr_ty, &|c| {
+                c.span(pat.span)
+                    .add_message("pattern type and expression type differ")
+            });
             for (var, tv) in bindings {
                 let sch = match non_expansive {
                     true => ctx.generalize(tv),

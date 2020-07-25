@@ -58,7 +58,7 @@ impl<'a> GlobalState<'a> {
 
         let mut parser = sml_frontend::parser::Parser::new(data, &mut self.interner);
         let ((res, diags), dur) = measure(|| (parser.parse_decl(), parser.diags));
-        info!("parsing took {} us", dur);
+        // info!("parsing took {} us", dur);
 
         let mut st_diag = Vec::new();
         match res {
@@ -70,7 +70,7 @@ impl<'a> GlobalState<'a> {
                 }
                 self.db = Database::new(self.arena);
                 let (_, dur) = measure(|| self.db.walk_decl(&d));
-                info!("new elab took {} us", dur);
+                // info!("new elab took {} us", dur);
 
                 let diags = std::mem::replace(&mut self.db.diags, Vec::new());
                 if !diags.is_empty() {
@@ -89,7 +89,7 @@ impl<'a> GlobalState<'a> {
             }
         };
 
-        info!("reporting {} errors for {:?}", st_diag.len(), url);
+        // info!("reporting {} errors for {:?}", st_diag.len(), url);
 
         self.send_notification::<lsp_types::notification::PublishDiagnostics>(
             lsp_types::PublishDiagnosticsParams {

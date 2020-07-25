@@ -22,67 +22,6 @@ impl Alpha {
         self.map.entry(id).or_insert_with(|| fresh_name(len))
     }
 
-    pub fn write_type(
-        &mut self,
-        ty: &Type<'_>,
-        interner: &Interner,
-        f: &mut dyn std::fmt::Write,
-    ) -> std::fmt::Result {
-        match ty {
-            Type::Var(tvar) => match tvar.ty() {
-                Some(bound) => self.write_type(bound, interner, f),
-                None => write!(f, "'{}", self.gen(tvar.id)),
-            },
-            Type::Con(tc, args) => match tc {
-                &sml_core::builtin::tycons::T_ARROW => {
-                    self.write_type(&args[0], interner, f)?;
-                    write!(f, " -> ")?;
-                    self.write_type(&args[1], interner, f)
-                }
-                _ => {
-                    if args.is_empty() {
-                        write!(f, "{}", interner.get(tc.name).unwrap_or_else(|| "?"))
-                    } else {
-                        for arg in args {
-                            self.write_type(*arg, interner, f)?;
-                            write!(f, " ")?;
-                        }
-                        write!(f, "{}", interner.get(tc.name).unwrap_or_else(|| "?"))
-                    }
-                }
-            },
-            Type::Record(fields) => {
-                let tuple = match fields.get(0) {
-                    Some(sml_core::Row {
-                        label: Symbol::Tuple(_),
-                        ..
-                    }) => true,
-                    _ => false,
-                };
-
-                if tuple {
-                    write!(f, "(")?;
-                } else {
-                    write!(f, "{{")?;
-                }
-                for (idx, field) in fields.iter().enumerate() {
-                    if !tuple {
-                        write!(f, "{}:", interner.get(field.label).unwrap_or_else(|| "?"))?;
-                    }
-                    self.write_type(field.data, interner, f)?;
-                    if idx != fields.len() - 1 {
-                        write!(f, ", ")?;
-                    }
-                }
-                if tuple {
-                    write!(f, ")")
-                } else {
-                    write!(f, "}}")
-                }
-            }
-        }
-    }
-
     pub fn write_type2(
         &mut self,
         ty: &database::Type<'_>,

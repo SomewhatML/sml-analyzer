@@ -149,6 +149,32 @@ impl<'db, 'ar> Iterator for NamespaceIter<'db, 'ar> {
     }
 }
 
+/// A partially elaborated Vec<ast::FnBinding>
+struct PartialFun<'s, 'ar> {
+    name: Symbol,
+    clauses: Vec<PartialFnBinding<'s, 'ar>>,
+    arity: usize,
+    /// Argument types, invariant that |arg_tys| = arity
+    arg_tys: Vec<&'ar Type<'ar>>,
+    /// The resulting type
+    res_ty: &'ar Type<'ar>,
+    /// The overall flattened type, where for each ty_i in args, we have
+    /// ty_0 -> ty_1 -> ... ty_arity -> res_ty
+    ty: &'ar Type<'ar>,
+}
+
+/// A partially elaborated ast::FnBinding
+struct PartialFnBinding<'s, 'ar> {
+    /// Function body
+    expr: &'s ast::Expr,
+    /// List of bound patterns `fun merge xs ys` = [xs, ys]
+    pats: Vec<&'s ast::Pat>,
+    /// A list of variables bound in `pats`, and fresh type variables
+    /// to be associated with those symbols
+    bindings: Vec<(Spanned<Symbol>, &'ar Type<'ar>)>,
+    span: Span,
+}
+
 impl<'ar> Database<'ar> {
     pub fn new(arena: &'ar Arena<'ar>) -> Database<'ar> {
         let mut ctx = Database {
@@ -600,7 +626,7 @@ impl<'ar> Database<'ar> {
         &mut self,
         pat: &ast::Pat,
         bind: bool,
-    ) -> (&'ar Type<'ar>, Vec<(Symbol, &'ar Type<'ar>)>) {
+    ) -> (&'ar Type<'ar>, Vec<(Spanned<Symbol>, &'ar Type<'ar>)>) {
         let mut bindings = Vec::new();
         let ty = self.walk_pat_inner(pat, bind, &mut bindings);
         (ty, bindings)
@@ -610,7 +636,7 @@ impl<'ar> Database<'ar> {
         &mut self,
         pat: &ast::Pat,
         bind: bool,
-        bindings: &mut Vec<(Symbol, &'ar Type<'ar>)>,
+        bindings: &mut Vec<(Spanned<Symbol>, &'ar Type<'ar>)>,
     ) -> &'ar Type<'ar> {
         use ast::PatKind::*;
         match &pat.data {
@@ -744,7 +770,7 @@ impl<'ar> Database<'ar> {
                     if bind {
                         self.define_value(*sym, Scheme::Mono(ty), IdStatus::Var, pat.span);
                     }
-                    bindings.push((*sym, ty));
+                    bindings.push((Spanned::new(*sym, pat.span), ty));
                     self.bindings.push((pat.span, ty));
                     ty
                 }
@@ -1189,6 +1215,135 @@ impl<'ar> Database<'ar> {
         }
     }
 
+    /// Perform initial elaboration on a function binding, enough to build up an environment
+    fn elab_decl_fnbind_ty<'s>(
+        &mut self,
+        name: Symbol,
+        arity: usize,
+        fbs: &'s [ast::FnBinding],
+    ) -> PartialFun<'s, 'ar> {
+        let arg_tys = (0..arity)
+            .map(|_| self.fresh_tyvar())
+            .collect::<Vec<&'ar Type<'ar>>>();
+        let res_ty = self.fresh_tyvar();
+        let mut clauses = Vec::new();
+
+        for clause in fbs {
+            if let Some(ty) = &clause.res_ty {
+                let t = self.walk_type(&ty, false);
+                self.unify(ty.span, &res_ty, &t);
+                // .map_err(|diag| {
+                //     diag.message(clause.span, format!("function clause with result constraint of different type: expected {:?}, got {:?}", &res_ty, &t))
+                // });
+            }
+
+            let mut pats = Vec::new();
+            let mut bindings = Vec::new();
+            for (idx, pat) in clause.pats.iter().enumerate() {
+                let pat_ty = self.walk_pat_inner(pat, false, &mut bindings);
+                self.unify(pat.span, &arg_tys[idx], pat_ty);
+                // .map_err(|diag| {
+                //     diag.message(clause.span, format!("function clause with argument of different type: expected {:?}, got {:?}", &arg_tys[0], &pat.ty))
+                // });
+                pats.push(pat);
+            }
+            clauses.push(PartialFnBinding {
+                expr: &clause.expr,
+                pats,
+                bindings,
+                span: clause.span,
+            })
+        }
+
+        let ty = arg_tys
+            .iter()
+            .rev()
+            .fold(res_ty, |acc, arg| self.arena.arrow(arg, acc));
+
+        PartialFun {
+            name,
+            clauses,
+            arity,
+            arg_tys,
+            res_ty,
+            ty,
+        }
+    }
+
+    fn elab_decl_fnbind(&mut self, fun: PartialFun<'_, 'ar>) {
+        let PartialFun {
+            clauses,
+            res_ty,
+            arg_tys,
+            arity,
+            name,
+            ty,
+            ..
+        } = fun;
+
+        let mut fun_span = clauses[0].span;
+        // Destructure so that we can move `bindings` into a closure
+        for PartialFnBinding {
+            mut pats,
+            expr,
+            bindings,
+            span,
+        } in clauses
+        {
+            // Make a new scope, in which we define the pattern bindings, and proceed
+            // to elaborate the body of the function clause
+            self.tyvar_rank += 1;
+            let expr = self.with_scope(move |ctx| {
+                for (var, tv) in bindings {
+                    ctx.define_value(var.data, Scheme::Mono(tv), IdStatus::Var, var.span);
+                }
+                ctx.walk_expr(&expr)
+            });
+            self.tyvar_rank -= 1;
+            // Unify function clause body with result type
+            self.unify(span, &res_ty, &expr);
+            fun_span += span;
+        }
+
+        // Rebind with final type. Unbind first so that generalization happens properly
+        self.unbind_value(name);
+        let sch = self.generalize(ty);
+        self.define_value(name, sch, IdStatus::Var, fun_span);
+    }
+
+    fn elab_decl_fun(&mut self, tyvars: &[Symbol], fbs: &[ast::Fun]) {
+        self.with_tyvars(|ctx| {
+            let mut vars = Vec::new();
+            ctx.tyvar_rank += 1;
+
+            // First step is to bind any syntactically bound type vars
+            // e.g. fun ('a, 'b) option_map ..
+            for sym in tyvars {
+                let f = ctx.arena.fresh_type_var(ctx.tyvar_rank + 1);
+                vars.push(f.id);
+                ctx.tyvars.push((*sym, f));
+            }
+
+            // Check to make sure all of the function clauses are consistent within each binding group
+            let mut info = Vec::new();
+            for f in fbs {
+                let n = f[0].name;
+                let a = f[0].pats.len();
+
+                // Create an initial binding, and add it the value environment
+                let fns = ctx.elab_decl_fnbind_ty(n, a, f);
+                ctx.define_value(fns.name, Scheme::Mono(fns.ty), IdStatus::Var, f.span);
+                info.push(fns);
+            }
+            ctx.tyvar_rank -= 1;
+
+            // Now perform actual elaboration, we've bound the name of the function to a temp variable
+            for fun in info {
+                ctx.elab_decl_fnbind(fun)
+            }
+        })
+    }
+
     // TODO: Properly handle scoping
     fn elab_decl_local(&mut self, decls: &ast::Decl, body: &ast::Decl, span: Span) {
         self.with_scope(|ctx| {
@@ -1200,21 +1355,47 @@ impl<'ar> Database<'ar> {
         })
     }
 
+    fn elab_decl_val(&mut self, tyvars: &[Symbol], pat: &ast::Pat, expr: &ast::Expr) {
+        self.with_tyvars(|ctx| {
+            ctx.tyvar_rank += 1;
+            for tyvar in tyvars {
+                ctx.tyvars
+                    .push((*tyvar, ctx.arena.fresh_type_var(ctx.tyvar_rank)));
+            }
+
+            let expr_ty = ctx.walk_expr(expr);
+            let (pat_ty, bindings) = ctx.walk_pat(pat, false);
+
+            ctx.tyvar_rank -= 1;
+            // let non_expansive = expr.non_expansive();
+            // FIXME: add to sml_frontend::ast?
+            let non_expansive = true;
+
+            ctx.unify(expr.span, pat_ty, expr_ty);
+            for (var, tv) in bindings {
+                let sch = match non_expansive {
+                    true => ctx.generalize(tv),
+                    false => Scheme::Mono(tv),
+                };
+                ctx.define_value(var.data, sch, IdStatus::Var, var.span);
+            }
+        })
+    }
+
     pub fn walk_decl(&mut self, decl: &ast::Decl) {
         match &decl.data {
             ast::DeclKind::Datatype(dbs) => self.elab_decl_datatype(dbs),
             ast::DeclKind::Type(tbs) => self.elab_decl_type(tbs),
-            // ast::DeclKind::Function(tyvars, fbs) => self.elab_decl_fun(tyvars, fbs),
-            // ast::DeclKind::Value(tyvars, pat, expr) => self.elab_decl_val(tyvars, pat, expr),
+            ast::DeclKind::Function(tyvars, fbs) => self.elab_decl_fun(tyvars, fbs),
+            ast::DeclKind::Value(tyvars, pat, expr) => self.elab_decl_val(tyvars, pat, expr),
             ast::DeclKind::Exception(exns) => self.elab_decl_exception(exns),
-            // ast::DeclKind::Fixity(fixity, bp, sym) => self.elab_decl_fixity(fixity, *bp, *sym),
+            ast::DeclKind::Fixity(fixity, bp, sym) => self.elab_decl_fixity(fixity, *bp, *sym),
             ast::DeclKind::Local(decls, body) => self.elab_decl_local(decls, body, decl.span),
             ast::DeclKind::Seq(decls) => {
                 for d in decls {
                     self.walk_decl(d);
                 }
             }
-            _ => {}
         }
         // Expand span
         self.namespaces[self.current].span.end = decl.span.end;

@@ -71,7 +71,7 @@ impl<'a> GlobalState<'a> {
                     }
                 }
                 self.db = Database::new(self.arena);
-                let (_, dur) = measure(|| self.db.elaborate_decl(&d));
+                let (_, dur) = measure(|| self.db.walk_decl(&d));
 
                 info!("new elab took {} us", dur);
                 // self.db.dump();

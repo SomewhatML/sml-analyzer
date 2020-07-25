@@ -38,8 +38,21 @@ pub struct Database<'ar> {
     // Arena for type allocation
     pub arena: &'ar Arena<'ar>,
 
+    pub bindings: Vec<(Span, &'ar Type<'ar>)>,
+
     // Append-only vector of warnings/errors we generate
     pub diags: Vec<Diagnostic>,
+
+    pub unification_errors: Vec<CantUnify<'ar>>,
+}
+
+pub struct CantUnify<'ar> {
+    ty1: &'ar Type<'ar>,
+    ty2: &'ar Type<'ar>,
+    sp1: Option<Span>,
+    sp2: Option<Span>,
+    message: String,
+    originating: Span,
 }
 
 /// An environment scope, that can hold a collection of type, expr, and infix bindings
@@ -147,7 +160,9 @@ impl<'ar> Database<'ar> {
             types: Vec::default(),
             values: Vec::default(),
             diags: Vec::default(),
+            unification_errors: Vec::default(),
             local: false,
+            bindings: Vec::default(),
             arena,
         };
         ctx.namespaces.push(Namespace::default());
@@ -179,11 +194,6 @@ impl<'ar> Database<'ar> {
 
         self.current = prev;
         r
-    }
-
-    /// Set the [`Span`] of the current [`Namespace`]
-    fn set_ns_span(&mut self, span: Span) {
-        self.namespaces[self.current].span = span;
     }
 
     /// Naively find the [`Namespace`] idx belonging to a [`Span`]
@@ -219,16 +229,6 @@ impl<'ar> Database<'ar> {
         }
 
         v
-    }
-
-    pub fn instantiate(&self, scheme: &Scheme<'ar>) -> &'ar Type<'ar> {
-        match scheme {
-            Scheme::Mono(ty) => ty,
-            Scheme::Poly(vars, ty) => {
-                let map = vars.into_iter().map(|v| (*v, self.fresh_tyvar())).collect();
-                ty.apply(&self.arena, &map)
-            }
-        }
     }
 
     pub fn in_scope_values(&self, loc: Location) -> Vec<(Symbol, &'ar Type<'ar>)> {
@@ -394,7 +394,150 @@ impl<'ar> Database<'ar> {
 }
 
 impl<'ar> Database<'ar> {
-    pub fn elaborate_type(&mut self, ty: &ast::Type, allow_unbound: bool) -> &'ar Type<'ar> {
+    /// Note that this can only be called once per type variable!
+    fn bind(&mut self, sp: Span, var: &'ar TypeVar<'ar>, ty: &'ar Type<'ar>) {
+        if let Type::Var(v2) = ty {
+            // TODO: Ensure that testing on id alone is ok - I believe it should be
+            if v2.id == var.id {
+                return;
+            }
+        }
+        if ty.occurs_check(var) {
+            self.diags
+                .push(Diagnostic::error(sp, "Cyclic type detected"));
+            return;
+        }
+
+        var.data.set(Some(ty));
+    }
+
+    pub fn unify(&mut self, sp: Span, a: &'ar Type<'ar>, b: &'ar Type<'ar>) {
+        match (a, b) {
+            (Type::Var(a1), Type::Var(b1)) => match (a1.ty(), b1.ty()) {
+                (Some(a), Some(b)) => self.unify(sp, a, b),
+                (Some(a), None) => self.unify(sp, a, b),
+                (None, Some(b)) => self.unify(sp, a, b),
+                (None, None) => self.bind(sp, a1, b),
+            },
+            (Type::Var(a), b) => match a.ty() {
+                Some(ty) => self.unify(sp, ty, b),
+                None => self.bind(sp, a, b),
+            },
+            (a, Type::Var(b)) => match b.ty() {
+                Some(ty) => self.unify(sp, a, ty),
+                None => self.bind(sp, b, a),
+            },
+            (Type::Con(a, a_args), Type::Con(b, b_args)) => {
+                if a != b {
+                    self.diags.push(Diagnostic::error(
+                        sp,
+                        format!(
+                            "Can't unify type constructors {:?} and {:?}",
+                            a.name, b.name
+                        ),
+                    ))
+                } else if a_args.len() != b_args.len() {
+                    // self.diags.push(
+                    //     Diagnostic::error(
+                    //         sp,
+                    //         "Can't unify type constructors with different argument lengths",
+                    //     )
+                    //     .message(sp, format!("{:?} has arguments: {:?}", a, a_args))
+                    //     .message(sp, format!("and {:?} has arguments: {:?}", b, b_args)),
+                    // )
+                } else {
+                    for (c, d) in a_args.into_iter().zip(b_args) {
+                        self.unify(sp, c, d);
+                    }
+                }
+            }
+            (Type::Record(r1), Type::Record(r2)) => {
+                if r1.len() != r2.len() {
+                    // return self.diags.push(
+                    //     Diagnostic::error(
+                    //         sp,
+                    //         "Can't unify record types with different number of fields",
+                    //     )
+                    //     .message(sp, format!("type {:?}", a))
+                    //     .message(sp, format!("type {:?}", b)),
+                    // );
+                    return;
+                }
+
+                for (ra, rb) in r1.iter().zip(r2.iter()) {
+                    if ra.label != rb.label {
+                        // return self.diags.push(
+                        //     Diagnostic::error(sp, "Can't unify record types")
+                        //         .message(
+                        //             ra.span,
+                        //             format!("label '{:?}' from type {:?}", ra.label, a),
+                        //         )
+                        //         .message(
+                        //             rb.span,
+                        //             format!(
+                        //                 "doesn't match label '{:?}' from type {:?}",
+                        //                 rb.label, b
+                        //             ),
+                        //         ),
+                        // );
+                        return;
+                    }
+                    self.unify(sp, &ra.data, &rb.data)
+                }
+            }
+            (a, b) => {
+                //     self.diags.push(Diagnostic::error(
+                //     sp,
+                //     format!("Can't unify types {:?} and {:?}", a, b),
+                // ))
+            }
+        }
+    }
+
+    pub fn unify_list(&mut self, sp: Span, tys: &[&'ar Type<'ar>]) {
+        let fst = &tys[0];
+        for ty in tys {
+            self.unify(sp, ty, fst);
+        }
+    }
+
+    pub fn generalize(&self, ty: &'ar Type<'ar>) -> Scheme<'ar> {
+        let ftv = ty.ftv_rank(self.tyvar_rank);
+
+        match ftv.len() {
+            0 => Scheme::Mono(ty),
+            _ => Scheme::Poly(ftv, ty),
+        }
+    }
+
+    pub fn instantiate(&self, scheme: &Scheme<'ar>) -> &'ar Type<'ar> {
+        match scheme {
+            Scheme::Mono(ty) => ty,
+            Scheme::Poly(vars, ty) => {
+                let map = vars.into_iter().map(|v| (*v, self.fresh_tyvar())).collect();
+                ty.apply(&self.arena, &map)
+            }
+        }
+    }
+
+    pub fn check_type_names(&mut self, sp: Span, ty: &'ar Type<'ar>) {
+        let mut names = Vec::new();
+        ty.visit(|f| match f {
+            Type::Con(tc, _) => names.push(*tc),
+            _ => {}
+        });
+
+        for tycon in names {
+            if self.lookup_type(&tycon.name).is_none() {
+                self.diags.push(Diagnostic::error(
+                    sp,
+                    format!("type {:?} escapes inner scope!", tycon.name),
+                ));
+            }
+        }
+    }
+
+    pub fn walk_type(&mut self, ty: &ast::Type, allow_unbound: bool) -> &'ar Type<'ar> {
         use ast::TypeKind::*;
         match &ty.data {
             Var(s) => match self.lookup_tyvar(s, allow_unbound) {
@@ -410,7 +553,7 @@ impl<'ar> Database<'ar> {
             Con(s, args) => {
                 let args = args
                     .iter()
-                    .map(|ty| self.elaborate_type(&ty, allow_unbound))
+                    .map(|ty| self.walk_type(&ty, allow_unbound))
                     .collect::<Vec<_>>();
 
                 let con = match self.lookup_type(s) {
@@ -445,9 +588,440 @@ impl<'ar> Database<'ar> {
             }
             Record(rows) => self.arena.alloc(Type::Record(SortedRecord::new(
                 rows.into_iter()
-                    .map(|row| self.elab_row(|f, r| f.elaborate_type(r, allow_unbound), row))
+                    .map(|row| self.elab_row(|f, r| f.walk_type(r, allow_unbound), row))
                     .collect::<Vec<Row<_>>>(),
             ))),
+        }
+    }
+}
+
+impl<'ar> Database<'ar> {
+    pub fn walk_pat(
+        &mut self,
+        pat: &ast::Pat,
+        bind: bool,
+    ) -> (&'ar Type<'ar>, Vec<(Symbol, &'ar Type<'ar>)>) {
+        let mut bindings = Vec::new();
+        let ty = self.walk_pat_inner(pat, bind, &mut bindings);
+        (ty, bindings)
+    }
+
+    pub(crate) fn walk_pat_inner(
+        &mut self,
+        pat: &ast::Pat,
+        bind: bool,
+        bindings: &mut Vec<(Symbol, &'ar Type<'ar>)>,
+    ) -> &'ar Type<'ar> {
+        use ast::PatKind::*;
+        match &pat.data {
+            App(con, p) => {
+                let p = self.walk_pat_inner(p, bind, bindings);
+                match self.lookup_value(con) {
+                    Some(Spanned {
+                        data:
+                            ValueStructure {
+                                scheme,
+                                status: IdStatus::Con(_),
+                            },
+                        ..
+                    }) => {
+                        let inst = self.instantiate(&scheme);
+
+                        let (arg, res) = match inst.de_arrow() {
+                            Some((a, r)) => (a, r),
+                            None => {
+                                let (dom, rng) = (self.fresh_tyvar(), self.fresh_tyvar());
+                                let arr = self.arena.arrow(dom, rng);
+                                self.unify(pat.span, inst, &arr);
+                                (dom, rng)
+                            }
+                        };
+                        self.unify(pat.span, arg, p);
+                        self.bindings.push((pat.span, res));
+                        res
+                    }
+                    _ => {
+                        self.diags.push(Diagnostic::error(
+                            pat.span,
+                            format!("Non-constructor {:?} applied to pattern", con),
+                        ));
+                        let ty = self.arena.fresh_var(self.tyvar_rank);
+                        self.bindings.push((pat.span, ty));
+                        ty
+                    }
+                }
+            }
+            Ascribe(p, ty) => {
+                let p = self.walk_pat_inner(p, bind, bindings);
+                let ty = self.walk_type(ty, true);
+                self.unify(pat.span, p, &ty);
+                self.bindings.push((pat.span, ty));
+                ty
+            }
+            Const(c) => self.const_ty(c),
+            FlatApp(pats) => {
+                let p = match self.pat_precedence(pats.clone()) {
+                    Ok(p) => p,
+                    Err(err) => {
+                        match err {
+                            precedence::Error::EndsInfix => self.diags.push(Diagnostic::error(
+                                pat.span,
+                                "application pattern ends with an infix operator",
+                            )),
+                            precedence::Error::InfixInPrefix => self.diags.push(Diagnostic::error(
+                                pat.span,
+                                "application pattern starts with an infix operator",
+                            )),
+                            precedence::Error::SamePrecedence => {
+                                self.diags.push(Diagnostic::error(
+                                    pat.span,
+                                    "application pattern mixes operators of equal precedence",
+                                ))
+                            }
+                            precedence::Error::InvalidOperator => {
+                                self.diags.push(Diagnostic::error(
+                                    pat.span,
+                                    "application pattern doesn't contain infix operator",
+                                ))
+                            }
+                        }
+
+                        // attempt error recovery
+                        ast::Pat::new(ast::PatKind::Wild, pat.span)
+                    }
+                };
+                let ty = self.walk_pat_inner(&p, bind, bindings);
+                self.bindings.push((pat.span, ty));
+                ty
+            }
+            List(pats) => {
+                let tys = pats
+                    .into_iter()
+                    .map(|p| self.walk_pat_inner(p, bind, bindings))
+                    .collect::<Vec<_>>();
+
+                self.unify_list(pat.span, &tys);
+                let ty = self.arena.list(tys[0]);
+                self.bindings.push((pat.span, ty));
+                ty
+            }
+            Record(rows) => {
+                let tys = rows
+                    .iter()
+                    .map(|p| Row {
+                        label: p.label,
+                        span: p.span,
+                        data: self.walk_pat_inner(&p.data, bind, bindings),
+                    })
+                    .collect::<Vec<Row<_>>>();
+
+                let ty = self.arena.alloc(Type::Record(SortedRecord::new(tys)));
+                self.bindings.push((pat.span, ty));
+                ty
+            }
+            Variable(sym) => match self.lookup_value(sym) {
+                // Rule 35
+                Some(Spanned {
+                    span,
+                    data:
+                        ValueStructure {
+                            scheme,
+                            status: IdStatus::Exn(c),
+                        },
+                })
+                | Some(Spanned {
+                    span,
+                    data:
+                        ValueStructure {
+                            scheme,
+                            status: IdStatus::Con(c),
+                        },
+                }) => self.instantiate(scheme),
+                _ => {
+                    // Rule 34
+                    // let tvar = self.arena.fresh_type_var(self.tyvar_rank);
+                    let ty = self.fresh_tyvar();
+                    if bind {
+                        self.define_value(*sym, Scheme::Mono(ty), IdStatus::Var, pat.span);
+                    }
+                    bindings.push((*sym, ty));
+                    self.bindings.push((pat.span, ty));
+                    ty
+                }
+            },
+            Wild => {
+                let ty = self.fresh_tyvar();
+                self.bindings.push((pat.span, ty));
+                ty
+            }
+        }
+    }
+}
+
+type Rule<'ar> = (&'ar Type<'ar>, &'ar Type<'ar>);
+impl<'ar> Database<'ar> {
+    fn elab_rule(&mut self, rule: &ast::Rule, bind: bool) -> Rule<'ar> {
+        let (pat, _) = self.walk_pat(&rule.pat, bind);
+        let expr = self.walk_expr(&rule.expr);
+        (pat, expr)
+    }
+
+    pub fn elab_rules(
+        &mut self,
+        sp: Span,
+        rules: &[ast::Rule],
+    ) -> (Vec<Rule<'ar>>, &'ar Type<'ar>) {
+        self.with_scope(|ctx| {
+            let rules = rules
+                .into_iter()
+                .map(|r| ctx.elab_rule(r, true))
+                .collect::<Vec<Rule>>();
+
+            let mut rtys = rules
+                .iter()
+                .map(|(p, e)| ctx.arena.arrow(p, e))
+                .collect::<Vec<_>>();
+
+            ctx.unify_list(sp, &rtys);
+            let fst = rtys.remove(0);
+            (rules, fst)
+        })
+    }
+
+    pub fn walk_expr(&mut self, expr: &ast::Expr) -> &'ar Type<'ar> {
+        match &expr.data {
+            ast::ExprKind::Andalso(e1, e2) => {
+                let ty1 = self.walk_expr(e1);
+                let ty2 = self.walk_expr(e2);
+                self.unify(e1.span, ty1, self.arena.bool());
+                self.unify(e2.span, ty2, self.arena.bool());
+                self.bindings.push((expr.span, ty1));
+                ty1
+            }
+            ast::ExprKind::App(e1, e2) => {
+                let ty1 = self.walk_expr(e1);
+                let ty2 = self.walk_expr(e2);
+
+                let f = self.fresh_tyvar();
+                self.unify(expr.span, ty1, self.arena.arrow(ty2, f));
+                self.bindings.push((expr.span, f));
+                f
+            }
+            ast::ExprKind::Case(scrutinee, rules) => {
+                let casee = self.walk_expr(scrutinee);
+
+                let (rules, ty) = self.elab_rules(expr.span, rules);
+
+                let (arg, res) = match ty.de_arrow() {
+                    Some((a, r)) => (a, r),
+                    None => {
+                        let (dom, rng) = (self.fresh_tyvar(), self.fresh_tyvar());
+                        let arr = self.arena.arrow(dom, rng);
+                        self.unify(expr.span, ty, arr);
+                        (dom, rng)
+                    }
+                };
+
+                self.unify(scrutinee.span, casee, arg);
+                self.bindings.push((expr.span, res));
+                res
+            }
+            ast::ExprKind::Const(c) => {
+                let ty = self.const_ty(c);
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::Constraint(ex, ty) => {
+                let ex = self.walk_expr(ex);
+                let ty = self.walk_type(ty, false);
+                self.unify(expr.span, ex, ty);
+                self.bindings.push((expr.span, ex));
+                ex
+            }
+            ast::ExprKind::FlatApp(exprs) => {
+                let p = match self.expr_precedence(exprs.clone()) {
+                    Ok(p) => p,
+                    Err(err) => {
+                        match err {
+                            precedence::Error::EndsInfix => self.diags.push(Diagnostic::error(
+                                expr.span,
+                                "application expr ends with an infix operator",
+                            )),
+                            precedence::Error::InfixInPrefix => self.diags.push(Diagnostic::error(
+                                expr.span,
+                                "application expr starts with an infix operator",
+                            )),
+                            precedence::Error::SamePrecedence => {
+                                self.diags.push(Diagnostic::error(
+                                    expr.span,
+                                    "application expr mixes operators of equal precedence",
+                                ))
+                            }
+                            precedence::Error::InvalidOperator => {
+                                self.diags.push(Diagnostic::error(
+                                    expr.span,
+                                    "application expr doesn't contain infix operator",
+                                ))
+                            }
+                        }
+                        // Return a dummy variable so that we can continue elaboration
+                        ast::Expr::new(ast::ExprKind::Var(self.fresh_var()), Span::dummy())
+                    }
+                };
+                let ty = self.walk_expr(&p);
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::Fn(rules) => {
+                let (rules, ty) = self.elab_rules(expr.span, rules);
+
+                let (arg, res) = match ty.de_arrow() {
+                    Some((a, r)) => (a, r),
+                    None => {
+                        let (dom, rng) = (self.fresh_tyvar(), self.fresh_tyvar());
+                        let arr = self.arena.arrow(dom, rng);
+                        self.unify(expr.span, &ty, &arr);
+                        (dom, rng)
+                    }
+                };
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::Handle(ex, rules) => {
+                let ex = self.walk_expr(ex);
+                let (rules, ty) = self.elab_rules(expr.span, rules);
+
+                let (arg, res) = match ty.de_arrow() {
+                    Some((a, r)) => (a, r),
+                    None => {
+                        let (dom, rng) = (self.fresh_tyvar(), self.fresh_tyvar());
+                        let arr = self.arena.arrow(dom, rng);
+                        self.unify(expr.span, &ty, &arr);
+                        (dom, rng)
+                    }
+                };
+
+                self.unify(expr.span, ex, res);
+                self.unify(expr.span, arg, self.arena.exn());
+                self.bindings.push((expr.span, res));
+                res
+            }
+            ast::ExprKind::If(e1, e2, e3) => {
+                let ty1 = self.walk_expr(e1);
+                let ty2 = self.walk_expr(e2);
+                let ty3 = self.walk_expr(e3);
+                self.unify(e1.span, ty1, self.arena.bool());
+                self.unify(e2.span, ty2, ty3);
+                self.bindings.push((expr.span, ty2));
+                ty2
+            }
+            ast::ExprKind::Let(decls, body) => {
+                let ty = self.with_scope(|ctx| {
+                    for decl in decls {
+                        ctx.walk_decl(decl);
+                    }
+                    ctx.walk_expr(body)
+                });
+                self.check_type_names(body.span, ty);
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::List(exprs) => {
+                let exprs = exprs
+                    .into_iter()
+                    .map(|ex| self.walk_expr(ex))
+                    .collect::<Vec<_>>();
+                self.unify_list(expr.span, &exprs);
+                // Pick the first type, since that was what everything was unified against
+                let ty = self.arena.list(exprs[0]);
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::Orelse(e1, e2) => {
+                let ty1 = self.walk_expr(e1);
+                let ty2 = self.walk_expr(e2);
+                self.unify(e1.span, ty1, self.arena.bool());
+                self.unify(e2.span, ty2, self.arena.bool());
+                self.bindings.push((expr.span, ty1));
+                ty1
+            }
+            ast::ExprKind::Primitive(prim) => {
+                let name = prim.sym;
+                let ty = self.walk_type(&prim.ty, false);
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::Raise(expr) => {
+                let ty = self.fresh_tyvar();
+                let ex = self.walk_expr(expr);
+                self.unify(expr.span, ex, self.arena.exn());
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::Record(rows) => {
+                let tys = rows
+                    .into_iter()
+                    .map(|r| self.elab_row(|ec, r| ec.walk_expr(r), r))
+                    .collect::<Vec<Row<&'ar Type<'ar>>>>();
+
+                let ty = self.arena.alloc(Type::Record(SortedRecord::new(tys)));
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::Selector(s) => {
+                // FIXME
+
+                let row = ast::Row {
+                    label: *s,
+                    data: ast::Pat::new(ast::PatKind::Variable(*s), Span::dummy()),
+                    span: Span::dummy(),
+                };
+                let pat = ast::Pat::new(ast::PatKind::Record(vec![row]), Span::dummy());
+                let inner = ast::Expr::new(ast::ExprKind::Var(*s), Span::dummy());
+                let ty = self.walk_expr(&ast::Expr::new(
+                    ast::ExprKind::Fn(vec![ast::Rule {
+                        pat,
+                        expr: inner,
+                        span: expr.span,
+                    }]),
+                    expr.span,
+                ));
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::Seq(exprs) => {
+                let mut ty = self.arena.unit();
+                for (idx, ex) in exprs.iter().enumerate() {
+                    if idx != exprs.len() - 1 {
+                        let ety = self.walk_expr(ex);
+                        self.unify(ex.span, ety, ty);
+                    } else {
+                        ty = self.walk_expr(ex);
+                    }
+                }
+                self.bindings.push((expr.span, ty));
+                ty
+            }
+            ast::ExprKind::Var(sym) => match self.lookup_value(sym) {
+                Some(spanned) => {
+                    let ty = self.instantiate(&spanned.data.scheme);
+                    self.bindings.push((expr.span, ty));
+                    ty
+                }
+                None => {
+                    self.diags.push(Diagnostic::error(
+                        expr.span,
+                        format!("unbound variable {:?}", sym),
+                    ));
+                    let ty = self.fresh_tyvar();
+                    self.bindings.push((expr.span, ty));
+                    ty
+                }
+            },
+            _ => panic!(Diagnostic::error(
+                expr.span,
+                format!("unknown expr {:?}", expr),
+            )),
         }
     }
 }
@@ -470,7 +1044,7 @@ impl<'ar> Database<'ar> {
                         let v = ctx.arena.fresh_type_var(ctx.tyvar_rank);
                         ctx.tyvars.push((*s, v));
                     }
-                    let ty = ctx.elaborate_type(&typebind.ty, false);
+                    let ty = ctx.walk_type(&typebind.ty, false);
                     let s = match typebind.tyvars.len() {
                         0 => Scheme::Mono(ty),
                         _ => Scheme::Poly(
@@ -486,7 +1060,7 @@ impl<'ar> Database<'ar> {
                     s
                 })
             } else {
-                Scheme::Mono(self.elaborate_type(&typebind.ty, false))
+                Scheme::Mono(self.walk_type(&typebind.ty, false))
             };
             self.define_type(
                 typebind.tycon,
@@ -537,7 +1111,7 @@ impl<'ar> Database<'ar> {
 
             let ty = match &con.data {
                 Some(ty) => {
-                    let dom = self.elaborate_type(ty, false);
+                    let dom = self.walk_type(ty, false);
                     constructors.push((cons, Some(dom)));
                     self.arena.arrow(dom, res)
                 }
@@ -595,7 +1169,7 @@ impl<'ar> Database<'ar> {
 
             match &exn.data {
                 Some(ty) => {
-                    let ty = self.elaborate_type(ty, false);
+                    let ty = self.walk_type(ty, false);
                     self.define_value(
                         exn.label,
                         Scheme::Mono(self.arena.arrow(ty, self.arena.exn())),
@@ -618,15 +1192,15 @@ impl<'ar> Database<'ar> {
     // TODO: Properly handle scoping
     fn elab_decl_local(&mut self, decls: &ast::Decl, body: &ast::Decl, span: Span) {
         self.with_scope(|ctx| {
-            ctx.elaborate_decl(decls);
+            ctx.walk_decl(decls);
             let prev = ctx.local;
             ctx.local = true;
-            ctx.elaborate_decl(body);
+            ctx.walk_decl(body);
             ctx.local = prev;
         })
     }
 
-    pub fn elaborate_decl(&mut self, decl: &ast::Decl) {
+    pub fn walk_decl(&mut self, decl: &ast::Decl) {
         match &decl.data {
             ast::DeclKind::Datatype(dbs) => self.elab_decl_datatype(dbs),
             ast::DeclKind::Type(tbs) => self.elab_decl_type(tbs),
@@ -637,7 +1211,7 @@ impl<'ar> Database<'ar> {
             ast::DeclKind::Local(decls, body) => self.elab_decl_local(decls, body, decl.span),
             ast::DeclKind::Seq(decls) => {
                 for d in decls {
-                    self.elaborate_decl(d);
+                    self.walk_decl(d);
                 }
             }
             _ => {}

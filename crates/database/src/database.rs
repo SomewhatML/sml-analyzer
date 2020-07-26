@@ -466,9 +466,80 @@ impl<'ar> Database<'ar> {
         if ty.occurs_check(var) {
             let err = f().add_reason("Cyclic type detected");
             self.unification_errors.push(err);
+        } else {
+            // Move into else block, so that even if occurs check fails, we can
+            // proceed with type checking without creating a cycle
+            var.data.set(Some(ty));
+        }
+    }
+
+    fn one_flex<F>(
+        &mut self,
+        rigid: &SortedRecord<&'ar Type<'ar>>,
+        flex: &Flex<'ar>,
+        ty1: &'ar Type<'ar>,
+        ty2: &'ar Type<'ar>,
+        f: &F,
+    ) where
+        F: Fn(CantUnify<'ar>) -> CantUnify<'ar>,
+    {
+        let mut merge = Vec::new();
+        for field in flex.known.iter() {
+            match rigid.contains(&field.label) {
+                Some(row) => {
+                    // self.unify(&field.data, &row.data, &|c| {
+                    //     f(c.add_reason("Record types have identical fields with differing types")
+                    //         .add_spans(field.span, row.span))
+                    // });
+                    self.unify(&field.data, &row.data, f);
+                }
+                None => {
+                    let err = f(CantUnify::new(ty1, ty2))
+                        .add_reason("Record types have differing number of fields");
+                    self.unification_errors.push(err);
+                    return;
+                }
+            }
         }
 
-        var.data.set(Some(ty));
+        // Create a list of row types that `flex` needs
+        for field in rigid.iter() {
+            if flex.known.contains(&field.label).is_none() {
+                merge.push(*field);
+            }
+        }
+
+        let mut borrow = flex.unknown.borrow_mut();
+        *borrow = Some(SortedRecord::new_unchecked(merge));
+    }
+
+    fn unify_records<F>(
+        &mut self,
+        r1: &SortedRecord<&'ar Type<'ar>>,
+        r2: &SortedRecord<&'ar Type<'ar>>,
+        ty1: &'ar Type<'ar>,
+        ty2: &'ar Type<'ar>,
+        f: &F,
+    ) where
+        F: Fn(CantUnify<'ar>) -> CantUnify<'ar>,
+    {
+        if r1.len() != r2.len() {
+            let err = f(CantUnify::new(ty1, ty2))
+                .add_reason("Record types have differing number of fields");
+            self.unification_errors.push(err);
+            return;
+        }
+
+        for (ra, rb) in r1.iter().zip(r2.iter()) {
+            if ra.label != rb.label {
+                let err = f(CantUnify::new(&ra.data, &rb.data))
+                    .add_reason("Record types have identical fields with differing types")
+                    .add_spans(ra.span, rb.span);
+                self.unification_errors.push(err);
+                return;
+            }
+            self.unify(&ra.data, &rb.data, f);
+        }
     }
 
     pub fn unify<F>(&mut self, a: &'ar Type<'ar>, b: &'ar Type<'ar>, f: &F)
@@ -504,25 +575,16 @@ impl<'ar> Database<'ar> {
                     }
                 }
             }
-            (Type::Record(r1), Type::Record(r2)) => {
-                if r1.len() != r2.len() {
-                    let err = f(CantUnify::new(a, b))
-                        .add_reason("Record types have differing number of fields");
-                    self.unification_errors.push(err);
-                    return;
-                }
-
-                for (ra, rb) in r1.iter().zip(r2.iter()) {
-                    if ra.label != rb.label {
-                        let err = f(CantUnify::new(&ra.data, &rb.data))
-                            .add_reason("Record types have identical fields with differing types")
-                            .add_spans(ra.span, rb.span);
-                        self.unification_errors.push(err);
-                        return;
-                    }
-                    self.unify(&ra.data, &rb.data, f);
-                }
-            }
+            (Type::Record(r1), Type::Record(r2)) => self.unify_records(r1, r2, a, b, f),
+            (Type::Flex(flex), Type::Record(rec)) => match flex.to_rigid() {
+                Some(r1) => self.unify_records(&r1, rec, a, b, f),
+                None => self.one_flex(rec, flex, a, b, f),
+            },
+            (Type::Record(rec), Type::Flex(flex)) => match flex.to_rigid() {
+                Some(r1) => self.unify_records(&r1, rec, a, b, f),
+                None => self.one_flex(rec, flex, a, b, f),
+            },
+            (Type::Flex(f1), Type::Flex(f2)) => todo!(),
             (a, b) => {
                 let err = f(CantUnify::new(a, b)).add_reason("Can't unify these types");
                 self.unification_errors.push(err);
@@ -755,7 +817,7 @@ impl<'ar> Database<'ar> {
                 self.bindings.push((pat.span, ty));
                 ty
             }
-            Record(rows) => {
+            Record(rows, flex) => {
                 let tys = rows
                     .iter()
                     .map(|p| Row {
@@ -765,7 +827,12 @@ impl<'ar> Database<'ar> {
                     })
                     .collect::<Vec<Row<_>>>();
 
-                let ty = self.arena.alloc(Type::Record(SortedRecord::new(tys)));
+                let ty = match flex {
+                    false => self.arena.alloc(Type::Record(SortedRecord::new(tys))),
+                    true => self
+                        .arena
+                        .alloc(Type::Flex(Flex::new(SortedRecord::new(tys)))),
+                };
                 self.bindings.push((pat.span, ty));
                 ty
             }
@@ -1056,7 +1123,7 @@ impl<'ar> Database<'ar> {
                     data: ast::Pat::new(ast::PatKind::Variable(*s), Span::dummy()),
                     span: Span::dummy(),
                 };
-                let pat = ast::Pat::new(ast::PatKind::Record(vec![row]), Span::dummy());
+                let pat = ast::Pat::new(ast::PatKind::Record(vec![row], true), Span::dummy());
                 let inner = ast::Expr::new(ast::ExprKind::Var(*s), Span::dummy());
                 let ty = self.walk_expr(&ast::Expr::new(
                     ast::ExprKind::Fn(vec![ast::Rule {
@@ -1477,7 +1544,7 @@ impl<'ar> Query<ast::Pat> for &Database<'ar> {
             ast::PatKind::Variable(s) => {
                 let sp_bc = b.span + c.span;
                 let sp = a.span + sp_bc;
-                let rec = ast::Pat::new(ast::make_record_pat(vec![b, c]), sp_bc);
+                let rec = ast::Pat::new(ast::make_record_pat(vec![b, c], false), sp_bc);
                 Ok(ast::Pat::new(ast::PatKind::App(s, Box::new(rec)), sp))
             }
             _ => Err(precedence::Error::InvalidOperator),

@@ -40,7 +40,14 @@ mod snippets {
     }
 
     pub fn expr_fn() -> CompletionItem {
-        template("fn", "${1:arg} => ${0:body}")
+        CompletionItem {
+            label: "fn".into(),
+            detail: Some("fn".into()),
+            kind: Some(CompletionItemKind::Keyword),
+            insert_text_format: Some(InsertTextFormat::Snippet),
+            insert_text: Some("(fn ${1:arg} => ${0:body})".into()),
+            ..CompletionItem::default()
+        }
     }
 
     pub fn expr_if() -> CompletionItem {

@@ -39,6 +39,7 @@ pub struct Database<'ar> {
     pub arena: &'ar Arena<'ar>,
 
     pub bindings: Vec<(Span, &'ar Type<'ar>)>,
+    pub references: Vec<(Span, Symbol)>,
 
     // Append-only vector of warnings/errors we generate
     pub diags: Vec<Diagnostic>,
@@ -221,6 +222,7 @@ impl<'ar> Database<'ar> {
             unification_errors: Vec::default(),
             local: false,
             bindings: Vec::default(),
+            references: Vec::default(),
             arena,
         };
         ctx.namespaces.push(Namespace::default());
@@ -301,6 +303,28 @@ impl<'ar> Database<'ar> {
                     let inst = self.instantiate(&data.scheme);
                     if loc.line >= span.start.line {
                         v.push((*sym, inst));
+                    }
+                }
+            }
+        }
+
+        v
+    }
+
+    pub fn in_scope_value_names(&self, loc: Location) -> Vec<Spanned<Symbol>> {
+        let mut v = Vec::new();
+        let iter = NamespaceIter {
+            ctx: &self,
+            ptr: Some(self.get_ns_span(loc)),
+        };
+        for ns in iter {
+            for (sym, id) in &ns.values {
+                if let Some(Spanned { span, .. }) = self.values.get(id.0 as usize) {
+                    if loc.line >= span.start.line {
+                        v.push(Spanned {
+                            span: *span,
+                            data: *sym,
+                        });
                     }
                 }
             }
@@ -1159,6 +1183,7 @@ impl<'ar> Database<'ar> {
                 Some(spanned) => {
                     let ty = self.instantiate(&spanned.data.scheme);
                     self.bindings.push((expr.span, ty));
+                    self.references.push((expr.span, *sym));
                     ty
                 }
                 None => {

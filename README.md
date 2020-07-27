@@ -3,8 +3,9 @@
 An experimental language-server for SomewhatML that provides:
 
 - Completions
-- Type on hover
-- Inline error reporting (syntatical and type unification)
+- Provide type information on hover
+- Goto definition support
+- Inline error reporting (syntax and type unification)
 
 ![Demo](demo.gif)
 

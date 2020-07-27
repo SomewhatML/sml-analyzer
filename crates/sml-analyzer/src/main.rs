@@ -5,7 +5,7 @@ use std::time::Instant;
 use log::info;
 use lsp_types::{
     notification::{DidChangeTextDocument, DidOpenTextDocument, DidSaveTextDocument},
-    request::{Completion, HoverRequest},
+    request::{Completion, GotoDefinition, HoverRequest},
     InitializeParams, ServerCapabilities, *,
 };
 
@@ -46,6 +46,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             trigger_characters: Some(vec![':'.to_string()]),
             work_done_progress_options: Default::default(),
         }),
+        definition_provider: Some(true),
         ..ServerCapabilities::default()
     };
 
@@ -82,7 +83,8 @@ fn main_loop<'arena>(
 
                 dispatch::request(req, &connection)
                     .handle::<HoverRequest, _, _>(|params| state.hover_request(params))?
-                    .handle::<Completion, _, _>(|params| state.completion_req(params))?;
+                    .handle::<Completion, _, _>(|params| state.completion_req(params))?
+                    .handle::<GotoDefinition, _, _>(|params| state.goto_def_request(params))?;
             }
             Message::Response(_) => {
                 // info!("got response: {:?}", resp);

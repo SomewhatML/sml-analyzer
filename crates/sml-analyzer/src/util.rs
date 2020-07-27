@@ -1,5 +1,19 @@
 use super::*;
 
+pub fn loc_to_position(loc: sml_util::span::Location) -> lsp_types::Position {
+    Position::new(loc.line as u64, loc.col as u64)
+}
+
+pub fn position_to_loc(pos: lsp_types::Position) -> sml_util::span::Location {
+    sml_util::span::Location::new(pos.line as u16, pos.character as u16, 0)
+}
+
+pub fn span_to_range(span: Span) -> Range {
+    let start = loc_to_position(span.start);
+    let end = loc_to_position(span.end);
+    Range::new(start, end)
+}
+
 struct LineIndex<'s> {
     source: &'s str,
     lines: Vec<u64>,

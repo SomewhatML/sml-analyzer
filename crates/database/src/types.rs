@@ -1,8 +1,8 @@
 use super::arena::Arena;
 use super::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fmt;
+use std::rc::Rc;
 
 pub struct TypeVar<'ar> {
     pub id: usize,
@@ -10,10 +10,16 @@ pub struct TypeVar<'ar> {
     pub data: Cell<Option<&'ar Type<'ar>>>,
 }
 
+pub struct Flex<'ar> {
+    pub known: SortedRecord<&'ar Type<'ar>>,
+    pub unknown: Rc<RefCell<Option<SortedRecord<&'ar Type<'ar>>>>>,
+}
+
 pub enum Type<'ar> {
     Var(&'ar TypeVar<'ar>),
     Con(Tycon, Vec<&'ar Type<'ar>>),
     Record(SortedRecord<&'ar Type<'ar>>),
+    Flex(Flex<'ar>),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq)]
@@ -83,6 +89,19 @@ impl<'ar> Type<'ar> {
                         queue.push_back(&row.data);
                     }
                 }
+                Type::Flex(flex) => {
+                    for row in flex.known.iter() {
+                        queue.push_back(&row.data);
+                    }
+                    if let Some(link) = &*flex.unknown.borrow() {
+                        // TODO: Should this even be possible? If a flex has it's
+                        // unknown set, then shouldn't it be promoted to a concrete
+                        // record type?
+                        for row in link.iter() {
+                            queue.push_back(&row.data);
+                        }
+                    }
+                }
             }
         }
     }
@@ -117,6 +136,19 @@ impl<'ar> Type<'ar> {
                         queue.push_back(&row.data);
                     }
                 }
+                Type::Flex(flex) => {
+                    for row in flex.known.iter() {
+                        queue.push_back(&row.data);
+                    }
+                    if let Some(link) = &*flex.unknown.borrow() {
+                        // TODO: Should this even be possible? If a flex has it's
+                        // unknown set, then shouldn't it be promoted to a concrete
+                        // record type?
+                        for row in link.iter() {
+                            queue.push_back(&row.data);
+                        }
+                    }
+                }
             }
         }
         set
@@ -144,6 +176,18 @@ impl<'ar> Type<'ar> {
                 vars.into_iter().map(|ty| ty.apply(arena, map)).collect(),
             )),
             Type::Record(rows) => arena.alloc(Type::Record(rows.fmap(|ty| ty.apply(arena, map)))),
+            Type::Flex(flex) => {
+                let flex_inner = Flex::new(flex.known.fmap(|ty| ty.apply(arena, map)));
+                if let Some(linked) = &*flex.unknown.borrow() {
+                    // TODO: Should this even be possible? If a flex has it's
+                    // unknown set, then shouldn't it be promoted to a concrete
+                    // record type?
+                    let mut u = flex_inner.unknown.borrow_mut();
+                    *u = Some(linked.fmap(|ty| ty.apply(arena, map)));
+                }
+
+                arena.alloc(Type::Flex(flex_inner))
+            }
         }
     }
 
@@ -168,6 +212,18 @@ impl<'ar> Type<'ar> {
             }
             Type::Con(_, tys) => tys.iter().any(|ty| ty.occurs_check(tyvar)),
             Type::Record(rows) => rows.iter().any(|r| r.data.occurs_check(tyvar)),
+            Type::Flex(flex) => {
+                let known = flex.known.iter().any(|r| r.data.occurs_check(tyvar));
+                let unknown = match &*flex.unknown.borrow() {
+                    // TODO: Should this even be possible? If a flex has it's
+                    // unknown set, then shouldn't it be promoted to a concrete
+                    // record type?
+                    Some(link) => link.iter().any(|r| r.data.occurs_check(tyvar)),
+                    None => false,
+                };
+
+                known || unknown
+            }
         }
     }
 }
@@ -230,5 +286,24 @@ impl<'ar> TypeVar<'ar> {
 
     fn rank(&self) -> usize {
         self.rank.get()
+    }
+}
+
+impl<'ar> Flex<'ar> {
+    pub fn new(known: SortedRecord<&'ar Type<'ar>>) -> Flex<'ar> {
+        let unknown = Rc::new(RefCell::new(None));
+        Flex { known, unknown }
+    }
+
+    pub fn to_rigid(&self) -> Option<SortedRecord<&'ar Type<'ar>>> {
+        let borrow = &*self.unknown.borrow();
+        let fields = borrow.as_ref()?;
+        let merge = self
+            .known
+            .iter()
+            .chain(fields.iter())
+            .copied()
+            .collect::<Vec<Row<_>>>();
+        Some(SortedRecord::new(merge))
     }
 }

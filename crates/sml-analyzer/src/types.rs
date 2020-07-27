@@ -61,6 +61,45 @@ impl Alpha {
         self.map.entry(id).or_insert_with(|| fresh_name(len))
     }
 
+    fn write_record(
+        &mut self,
+        fields: &database::SortedRecord<&'_ database::Type<'_>>,
+        flex: bool,
+        interner: &Interner,
+        f: &mut dyn std::fmt::Write,
+    ) -> std::fmt::Result {
+        let tuple = match fields.get(0) {
+            Some(database::Row {
+                label: Symbol::Tuple(_),
+                ..
+            }) => true,
+            _ => false,
+        };
+
+        if tuple {
+            write!(f, "(")?;
+        } else {
+            write!(f, "{{")?;
+        }
+        for (idx, field) in fields.iter().enumerate() {
+            if !tuple {
+                write!(f, "{}:", interner.get(field.label).unwrap_or_else(|| "?"))?;
+            }
+            self.write_type2(field.data, interner, f)?;
+            if idx != fields.len() - 1 {
+                write!(f, ", ")?;
+            }
+        }
+        if tuple {
+            write!(f, ")")
+        } else {
+            if flex {
+                write!(f, "...")?;
+            }
+            write!(f, "}}")
+        }
+    }
+
     pub fn write_type2(
         &mut self,
         ty: &database::Type<'_>,
@@ -90,35 +129,11 @@ impl Alpha {
                     }
                 }
             },
-            database::Type::Record(fields) => {
-                let tuple = match fields.get(0) {
-                    Some(database::Row {
-                        label: Symbol::Tuple(_),
-                        ..
-                    }) => true,
-                    _ => false,
-                };
-
-                if tuple {
-                    write!(f, "(")?;
-                } else {
-                    write!(f, "{{")?;
-                }
-                for (idx, field) in fields.iter().enumerate() {
-                    if !tuple {
-                        write!(f, "{}:", interner.get(field.label).unwrap_or_else(|| "?"))?;
-                    }
-                    self.write_type2(field.data, interner, f)?;
-                    if idx != fields.len() - 1 {
-                        write!(f, ", ")?;
-                    }
-                }
-                if tuple {
-                    write!(f, ")")
-                } else {
-                    write!(f, "}}")
-                }
-            }
+            database::Type::Record(fields) => self.write_record(fields, false, interner, f),
+            database::Type::Flex(flex) => match flex.to_rigid() {
+                Some(fields) => self.write_record(&fields, false, interner, f),
+                None => self.write_record(&flex.known, true, interner, f),
+            },
         }
     }
 }

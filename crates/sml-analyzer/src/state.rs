@@ -1,4 +1,5 @@
 use super::*;
+use lsp_types::request::GotoDefinitionResponse;
 
 pub struct GlobalState<'arena> {
     text_cache: HashMap<lsp_types::Url, String>,
@@ -166,8 +167,7 @@ impl<'a> GlobalState<'a> {
         self.db
             .bindings
             .iter()
-            .filter(|(sp, _)| in_span(&pos, sp))
-            .last()
+            .find(|(sp, _)| in_span(&pos, sp))
             .map(|(_, ty)| *ty)
     }
 
@@ -215,5 +215,26 @@ impl<'a> GlobalState<'a> {
                 }
             },
         )
+    }
+
+    pub fn goto_def_request(
+        &mut self,
+        params: TextDocumentPositionParams,
+    ) -> Option<GotoDefinitionResponse> {
+        use sml_util::span::Spanned;
+
+        let pos = params.position;
+        let loc = sml_util::span::Location::new(pos.line as u16, pos.character as u16, 0);
+
+        let (_, name) = self
+            .db
+            .references
+            .iter()
+            .find(|(sp, _)| in_span(&pos, sp))?;
+        let vals = self.db.in_scope_value_names(loc);
+        let Spanned { span, .. } = vals.into_iter().find(|Spanned { data, .. }| data == name)?;
+
+        let loc = Location::new(params.text_document.uri, crate::util::span_to_range(span));
+        Some(GotoDefinitionResponse::Scalar(loc))
     }
 }

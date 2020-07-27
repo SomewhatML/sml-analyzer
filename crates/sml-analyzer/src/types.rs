@@ -1,18 +1,7 @@
-use sml_core::types::*;
 use sml_util::interner::*;
 use std::collections::HashMap;
 
 use database::CantUnify;
-
-// pub struct CantUnify<'ar> {
-//     pub ty1: &'ar Type<'ar>,
-//     pub ty2: &'ar Type<'ar>,
-//     pub sp1: Option<Span>,
-//     pub sp2: Option<Span>,
-//     pub message: String,
-//     pub reason: String,
-//     pub originating: Option<Span>,
-// }
 
 fn span_to_range(sp: sml_util::span::Span) -> lsp_types::Range {
     lsp_types::Range::new(

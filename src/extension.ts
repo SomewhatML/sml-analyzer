@@ -25,7 +25,7 @@ let client: LanguageClient;
 export function activate(context: ExtensionContext) {
 	// The server is implemented in node
 	let cwd = ".";
-	let command = path.join(context.extensionPath, "target", "release", "sml-analyzer.exe");
+	let command = path.join(context.extensionPath, "target", "debug", "sml-analyzer.exe");
 	const run: Executable = {
 		command,
 		options: { cwd },

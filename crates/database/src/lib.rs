@@ -4,22 +4,12 @@ pub mod check;
 pub mod database;
 pub mod types;
 
-use log::*;
 use sml_util::interner::Symbol;
 use sml_util::span::{Location, Span, Spanned};
 pub use types::*;
 
 pub use check::Check;
 pub use database::{CantUnify, Database};
-
-#[inline]
-fn in_span(pos: &Location, span: &Span) -> bool {
-    if pos.line >= span.start.line && pos.line <= span.end.line {
-        pos.col >= span.start.col && pos.col <= span.end.col
-    } else {
-        false
-    }
-}
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, PartialOrd, Eq, Hash)]
 pub struct TypeId(pub u32);

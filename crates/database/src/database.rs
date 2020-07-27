@@ -279,7 +279,7 @@ impl<'ar> Database<'ar> {
                     let inst = match data {
                         TypeStructure::Tycon(_) => None,
                         TypeStructure::Scheme(s) => Some(self.instantiate(&s)),
-                        TypeStructure::Datatype(_, cons) => None,
+                        TypeStructure::Datatype(_, _) => None,
                     };
                     if loc.line >= span.start.line {
                         v.push((*sym, inst));
@@ -385,7 +385,7 @@ impl<'ar> Database<'ar> {
             .expect("error: redefine_value");
         let s = Scheme::Mono(self.fresh_tyvar());
 
-        std::mem::replace(&mut self.values[id.0 as usize].data.scheme, s);
+        let _ = std::mem::replace(&mut self.values[id.0 as usize].data.scheme, s);
     }
 
     /// Starting from the current [`Namespace`], search for a bound name.
@@ -866,20 +866,20 @@ impl<'ar> Database<'ar> {
             Variable(sym) => match self.lookup_value(sym) {
                 // Rule 35
                 Some(Spanned {
-                    span,
                     data:
                         ValueStructure {
                             scheme,
                             status: IdStatus::Exn(_),
                         },
+                    ..
                 })
                 | Some(Spanned {
-                    span,
                     data:
                         ValueStructure {
                             scheme,
                             status: IdStatus::Con(_),
                         },
+                    ..
                 }) => self.instantiate(scheme),
                 _ => {
                     // Rule 34
@@ -1072,7 +1072,7 @@ impl<'ar> Database<'ar> {
                     c.span(e1.span)
                         .add_message("expected bool expression in `if`")
                 });
-                self.unify(ty2, ty2, &|c| {
+                self.unify(ty2, ty3, &|c| {
                     c.span(expr.span)
                         .add_spans(e2.span, e3.span)
                         .add_message("`if` arms don't have the same type")
@@ -1117,7 +1117,7 @@ impl<'ar> Database<'ar> {
                 ty1
             }
             ast::ExprKind::Primitive(prim) => {
-                let name = prim.sym;
+                // let name = prim.sym;
                 let ty = self.walk_type(&prim.ty, false);
                 self.bindings.push((expr.span, ty));
                 ty
@@ -1309,11 +1309,6 @@ impl<'ar> Database<'ar> {
             };
             self.define_value(con.label, s, IdStatus::Con(cons), con.span);
         }
-        let dt = Datatype {
-            tycon,
-            tyvars: tyvars.iter().map(|tv| tv.id).collect(),
-            constructors,
-        };
     }
 
     fn elab_decl_datatype(&mut self, dbs: &[ast::Datatype]) {
@@ -1498,7 +1493,7 @@ impl<'ar> Database<'ar> {
     }
 
     // TODO: Properly handle scoping
-    fn elab_decl_local(&mut self, decls: &ast::Decl, body: &ast::Decl, span: Span) {
+    fn elab_decl_local(&mut self, decls: &ast::Decl, body: &ast::Decl) {
         self.with_scope(|ctx| {
             ctx.walk_decl(decls);
             let prev = ctx.local;
@@ -1546,7 +1541,7 @@ impl<'ar> Database<'ar> {
             ast::DeclKind::Value(tyvars, pat, expr) => self.elab_decl_val(tyvars, pat, expr),
             ast::DeclKind::Exception(exns) => self.elab_decl_exception(exns),
             ast::DeclKind::Fixity(fixity, bp, sym) => self.elab_decl_fixity(fixity, *bp, *sym),
-            ast::DeclKind::Local(decls, body) => self.elab_decl_local(decls, body, decl.span),
+            ast::DeclKind::Local(decls, body) => self.elab_decl_local(decls, body),
             ast::DeclKind::Seq(decls) => {
                 for d in decls {
                     self.walk_decl(d);

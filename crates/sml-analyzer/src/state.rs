@@ -17,7 +17,13 @@ pub fn diag_convert(diag: sml_util::diagnostics::Diagnostic) -> Diagnostic {
         Position::new(sp.start.line as u64, sp.start.col as u64),
         Position::new(sp.end.line as u64, sp.end.col as u64),
     );
-    Diagnostic::new_simple(range, message)
+    let mut out = Diagnostic::new_simple(range, message);
+    out.severity = Some(match diag.level {
+        sml_util::diagnostics::Level::Bug => DiagnosticSeverity::Information,
+        sml_util::diagnostics::Level::Warn => DiagnosticSeverity::Warning,
+        sml_util::diagnostics::Level::Error => DiagnosticSeverity::Error,
+    });
+    out
 }
 
 fn measure<T, F: FnOnce() -> T>(f: F) -> (T, u128) {

@@ -1,11 +1,5 @@
 use super::*;
 
-fn ty(s: &str) -> CompletionItem {
-    let mut c = CompletionItem::new_simple(s.into(), "primitive type".into());
-    c.kind = Some(CompletionItemKind::TypeParameter);
-    c
-}
-
 fn keyword(s: &str) -> CompletionItem {
     let mut c = CompletionItem::new_simple(s.into(), "keyword".into());
     c.kind = Some(CompletionItemKind::Keyword);

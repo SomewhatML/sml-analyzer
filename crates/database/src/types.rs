@@ -2,7 +2,7 @@ use super::arena::Arena;
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fmt;
+use std::rc::Rc;
 
 pub struct TypeVar<'ar> {
     pub id: usize,
@@ -12,7 +12,7 @@ pub struct TypeVar<'ar> {
 
 pub struct Flex<'ar> {
     pub known: SortedRecord<&'ar Type<'ar>>,
-    pub unknown: RefCell<Option<SortedRecord<&'ar Type<'ar>>>>,
+    pub unknown: Rc<RefCell<Option<SortedRecord<&'ar Type<'ar>>>>>,
 }
 
 pub enum Type<'ar> {
@@ -291,7 +291,7 @@ impl<'ar> TypeVar<'ar> {
 
 impl<'ar> Flex<'ar> {
     pub fn new(known: SortedRecord<&'ar Type<'ar>>) -> Flex<'ar> {
-        let unknown = RefCell::new(None);
+        let unknown = Rc::new(RefCell::new(None));
         Flex { known, unknown }
     }
 

@@ -593,6 +593,9 @@ impl<'ar> Database<'ar> {
     }
 
     pub fn unify_list(&mut self, sp: Span, tys: &[&'ar Type<'ar>]) {
+        if tys.len() == 1 {
+            return;
+        }
         let fst = &tys[0];
         for ty in tys {
             self.unify(ty, fst, &|c| {
